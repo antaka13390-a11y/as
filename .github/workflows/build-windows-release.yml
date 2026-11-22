@@ -137,18 +137,114 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $logDir = Join-Path (Get-Location) "artifacts\logs"
+          New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+
+          function Show-LogFile {
+            param([string]$Path, [string]$Title)
+            Write-Host "----- $Title ($Path) -----"
+            if (Test-Path $Path) {
+              Get-Content -Path $Path -Raw
+            } else {
+              Write-Host "<not found>"
+            }
+          }
+
+          function Copy-CyberHubProgramDataLogs {
+            $pdLogs = "C:\ProgramData\CyberHub\Logs"
+            if (Test-Path $pdLogs) {
+              Get-ChildItem -Path $pdLogs -File -ErrorAction SilentlyContinue | ForEach-Object {
+                Copy-Item -Path $_.FullName -Destination (Join-Path $logDir $_.Name) -Force
+              }
+            }
+          }
+
+          function Show-ServerDiagnostics {
+            param([string]$InnoLogPath)
+            Copy-CyberHubProgramDataLogs
+            Show-LogFile -Path $InnoLogPath -Title "Server Inno Setup Log"
+            Show-LogFile -Path (Join-Path $logDir "Install-CyberHubServer.log") -Title "Install-CyberHubServer.ps1 Output"
+            Show-LogFile -Path (Join-Path $logDir "Configure-NtfsSmbPermissions.log") -Title "Configure-NtfsSmbPermissions.ps1 Output"
+
+            Write-Host "----- Installed Files in C:\CyberHub\ServerService -----"
+            if (Test-Path "C:\CyberHub\ServerService") {
+              Get-ChildItem -Path "C:\CyberHub\ServerService" -Depth 2 | Select-Object FullName, Length | Format-Table -AutoSize
+            } else {
+              Write-Host "C:\CyberHub\ServerService does not exist!"
+            }
+
+            Write-Host "----- Service Control Manager Query (CyberHubServerService) -----"
+            & sc.exe queryex CyberHubServerService 2>&1 | Write-Host
+            & sc.exe qc CyberHubServerService 2>&1 | Write-Host
+
+            Write-Host "----- Recent Event Log Entries (Service Control Manager / CyberHub / .NET) -----"
+            Get-WinEvent -FilterHashtable @{ LogName = 'System', 'Application'; Level = 1, 2, 3 } -MaxEvents 25 -ErrorAction SilentlyContinue |
+              Where-Object { $_.Message -match 'CyberHub|Service Control Manager|\.NET Runtime' -or $_.ProviderName -match 'Service Control Manager|\.NET Runtime|Application Error' } |
+              Select-Object -First 15 TimeCreated, LogName, ProviderName, Id, Message |
+              Format-List
+          }
 
           # Ensure clean baseline in case of self-hosted runner reuse
           Remove-Item -Path "C:\ProgramData\CyberHub" -Recurse -Force -ErrorAction SilentlyContinue
 
           Write-Host "=== 1. Verifying CyberHub-Server-Setup.exe ==="
-          $srvProc = Start-Process -FilePath "artifacts/installers/CyberHub-Server-Setup.exe" `
-            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/ADMINIP=127.0.0.1", "/ADMINHOST=$env:COMPUTERNAME", "/SERVERDNS=localhost" `
+          $serverExe = (Resolve-Path "artifacts/installers/CyberHub-Server-Setup.exe").Path
+          $serverInnoLog = Join-Path $logDir "server-setup-inno.log"
+          $srvProc = Start-Process -FilePath $serverExe `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=`"$serverInnoLog`"", "/ADMINIP=127.0.0.1", "/ADMINHOST=$env:COMPUTERNAME", "/SERVERDNS=localhost" `
             -Wait -PassThru
-          if ($srvProc.ExitCode -ne 0) { throw "Server installer exited with $($srvProc.ExitCode)" }
+          Copy-CyberHubProgramDataLogs
+          Write-Host "CyberHub-Server-Setup.exe exited with code $($srvProc.ExitCode)."
 
-          $svc = Get-Service -Name "CyberHubServerService" -ErrorAction Stop
-          if ($svc.Status -ne "Running") { throw "CyberHubServerService failed to reach Running state: $($svc.Status)" }
+          Show-LogFile -Path (Join-Path $logDir "Install-CyberHubServer.log") -Title "Install-CyberHubServer.ps1 Output"
+          Show-LogFile -Path (Join-Path $logDir "Configure-NtfsSmbPermissions.log") -Title "Configure-NtfsSmbPermissions.ps1 Output"
+
+          if ($srvProc.ExitCode -ne 0) {
+            Show-ServerDiagnostics -InnoLogPath $serverInnoLog
+            throw "CyberHub-Server-Setup.exe failed with exit code $($srvProc.ExitCode). Inspect logs above."
+          }
+
+          if (-not (Test-Path "C:\CyberHub\ServerService\CyberHub.ServerService.exe")) {
+            Show-ServerDiagnostics -InnoLogPath $serverInnoLog
+            throw "Server executable missing at C:\CyberHub\ServerService\CyberHub.ServerService.exe after installer completed."
+          }
+
+          $svc = Get-Service -Name "CyberHubServerService" -ErrorAction SilentlyContinue
+          if (-not $svc) {
+            Show-ServerDiagnostics -InnoLogPath $serverInnoLog
+            throw "Windows service 'CyberHubServerService' was NOT registered despite installer exiting 0."
+          }
+
+          $wmiSvc = Get-CimInstance -ClassName Win32_Service -Filter "Name='CyberHubServerService'" -ErrorAction SilentlyContinue
+          if (-not $wmiSvc) {
+            Show-ServerDiagnostics -InnoLogPath $serverInnoLog
+            throw "Win32_Service metadata missing for 'CyberHubServerService'."
+          }
+
+          Write-Host "Service registration details:"
+          Write-Host "  Name      : $($wmiSvc.Name)"
+          Write-Host "  PathName  : $($wmiSvc.PathName)"
+          Write-Host "  StartMode : $($wmiSvc.StartMode)"
+          Write-Host "  StartName : $($wmiSvc.StartName)"
+          Write-Host "  State     : $($wmiSvc.State)"
+
+          if ($wmiSvc.PathName -notlike "*C:\CyberHub\ServerService\CyberHub.ServerService.exe*--contentRoot*") {
+            Show-ServerDiagnostics -InnoLogPath $serverInnoLog
+            throw "Unexpected service PathName: $($wmiSvc.PathName)"
+          }
+          if ($wmiSvc.StartMode -ne "Auto") {
+            Show-ServerDiagnostics -InnoLogPath $serverInnoLog
+            throw "Expected StartupType/StartMode 'Auto', got '$($wmiSvc.StartMode)'."
+          }
+          if ($wmiSvc.StartName -notmatch "LocalSystem") {
+            Show-ServerDiagnostics -InnoLogPath $serverInnoLog
+            throw "Expected service account 'LocalSystem', got '$($wmiSvc.StartName)'."
+          }
+
+          if ($svc.Status -ne "Running") {
+            Show-ServerDiagnostics -InnoLogPath $serverInnoLog
+            throw "CyberHubServerService failed to reach Running state: $($svc.Status)"
+          }
 
           $catalog = $null
           for ($attempt = 0; $attempt -lt 20; $attempt++) {
@@ -159,7 +255,10 @@ jobs:
               Start-Sleep -Seconds 1
             }
           }
-          if (-not $catalog) { throw "Public catalog endpoint did not become reachable over HTTPS within 20s." }
+          if (-not $catalog) {
+            Show-ServerDiagnostics -InnoLogPath $serverInnoLog
+            throw "Public catalog endpoint did not become reachable over HTTPS within 20s."
+          }
 
           $theme = Invoke-RestMethod -Uri "https://127.0.0.1:8443/api/catalog/theme" -SkipCertificateCheck
           if (-not $theme) { throw "Public theme endpoint returned empty payload." }
@@ -216,10 +315,16 @@ jobs:
           Remove-Item -Path "C:\ProgramData\CyberHub" -Recurse -Force -ErrorAction SilentlyContinue
 
           Write-Host "=== 2. Verifying CyberHub-AdminPanel-Setup.exe ==="
-          $admProc = Start-Process -FilePath "artifacts/installers/CyberHub-AdminPanel-Setup.exe" `
-            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SERVERURL=https://127.0.0.1:8443" `
+          $adminInnoLog = Join-Path $logDir "admin-setup-inno.log"
+          $admProc = Start-Process -FilePath (Resolve-Path "artifacts/installers/CyberHub-AdminPanel-Setup.exe").Path `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=`"$adminInnoLog`"", "/SERVERURL=https://127.0.0.1:8443" `
             -Wait -PassThru
-          if ($admProc.ExitCode -ne 0) { throw "Admin installer failed: $($admProc.ExitCode)" }
+          Copy-CyberHubProgramDataLogs
+          if ($admProc.ExitCode -ne 0) {
+            Show-LogFile -Path $adminInnoLog -Title "AdminPanel Inno Setup Log"
+            Show-LogFile -Path (Join-Path $logDir "Configure-CyberHubAdmin.log") -Title "Configure-CyberHubAdmin.ps1 Output"
+            throw "Admin installer failed: $($admProc.ExitCode)"
+          }
 
           $adminExe = "C:\Program Files\CyberHub\AdminPanel\CyberHub.AdminPanel.exe"
           if (-not (Test-Path $adminExe)) { throw "Missing $adminExe after install" }
@@ -236,10 +341,16 @@ jobs:
           Start-Process -FilePath "C:\Program Files\CyberHub\AdminPanel\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait | Out-Null
 
           Write-Host "=== 3. Verifying CyberHub-ClientLauncher-Setup.exe ==="
-          $cliProc = Start-Process -FilePath "artifacts/installers/CyberHub-ClientLauncher-Setup.exe" `
-            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SERVERURL=https://127.0.0.1:8443", "/AUTOSTART=0" `
+          $clientInnoLog = Join-Path $logDir "client-setup-inno.log"
+          $cliProc = Start-Process -FilePath (Resolve-Path "artifacts/installers/CyberHub-ClientLauncher-Setup.exe").Path `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=`"$clientInnoLog`"", "/SERVERURL=https://127.0.0.1:8443", "/AUTOSTART=0" `
             -Wait -PassThru
-          if ($cliProc.ExitCode -ne 0) { throw "Client installer failed: $($cliProc.ExitCode)" }
+          Copy-CyberHubProgramDataLogs
+          if ($cliProc.ExitCode -ne 0) {
+            Show-LogFile -Path $clientInnoLog -Title "ClientLauncher Inno Setup Log"
+            Show-LogFile -Path (Join-Path $logDir "Configure-CyberHubClient.log") -Title "Configure-CyberHubClient.ps1 Output"
+            throw "Client installer failed: $($cliProc.ExitCode)"
+          }
 
           $clientExe = "C:\Program Files\CyberHub\ClientLauncher\CyberHub.ClientLauncher.exe"
           if (-not (Test-Path $clientExe)) { throw "Missing $clientExe after install" }
@@ -255,10 +366,16 @@ jobs:
           Start-Process -FilePath "C:\Program Files\CyberHub\ClientLauncher\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait | Out-Null
 
           Write-Host "=== 4. Verifying Unified CyberHub-Setup.exe (Client role) ==="
-          $masterProc = Start-Process -FilePath "artifacts/installers/CyberHub-Setup.exe" `
-            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/ROLE=client", "/AUTOSTART=0" `
+          $masterInnoLog = Join-Path $logDir "master-client-setup-inno.log"
+          $masterProc = Start-Process -FilePath (Resolve-Path "artifacts/installers/CyberHub-Setup.exe").Path `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=`"$masterInnoLog`"", "/ROLE=client", "/AUTOSTART=0" `
             -Wait -PassThru
-          if ($masterProc.ExitCode -ne 0) { throw "Master installer failed: $($masterProc.ExitCode)" }
+          Copy-CyberHubProgramDataLogs
+          if ($masterProc.ExitCode -ne 0) {
+            Show-LogFile -Path $masterInnoLog -Title "Master Setup (Client) Inno Log"
+            Show-LogFile -Path (Join-Path $logDir "Configure-CyberHubClient.log") -Title "Configure-CyberHubClient.ps1 Output"
+            throw "Master installer failed: $($masterProc.ExitCode)"
+          }
           if (-not (Test-Path $clientExe)) { throw "Master installer did not deploy ClientLauncher.exe" }
           if (Test-Path "C:\Program Files\CyberHub\ClientLauncher\CyberHub.AdminPanel.exe") {
             throw "SECURITY VIOLATION: Master client install deployed AdminPanel.exe!"
@@ -275,6 +392,7 @@ jobs:
             Set-Content -Path artifacts/installers/SHA256SUMS.txt -Encoding ascii
 
       - name: Upload Installer & Test Artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cyberhub-windows-installers-v${{ env.APP_VERSION }}
@@ -282,6 +400,7 @@ jobs:
             artifacts/installers/*.exe
             artifacts/installers/SHA256SUMS.txt
             artifacts/test-results/**
+            artifacts/logs/**
           retention-days: 90
 
       - name: Publish GitHub Release with Download Links

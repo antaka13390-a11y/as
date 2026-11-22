@@ -46,16 +46,7 @@ Name: "{group}\CYBER HUB"; Filename: "{app}\CyberHub.ClientLauncher.exe"; Workin
 Name: "{group}\Uninstall CYBER HUB"; Filename: "{uninstallexe}"
 
 [Run]
-; Server setup tasks
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\Install-CyberHubServer.ps1"" -PublishPath ""{app}"" -AdminWorkstationIp ""{code:GetAdminIp}"" -AdminWorkstationName ""{code:GetAdminHost}"" -CertificateDnsName ""{code:GetServerDns}"""; StatusMsg: "Configuring CYBER HUB Server Service, LAN HTTPS certificate, and firewall..."; Flags: runhidden waituntilterminated; Check: IsRoleServer
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\Configure-NtfsSmbPermissions.ps1"""; StatusMsg: "Applying NTFS & Read-Only SMB share permissions..."; Flags: runhidden waituntilterminated; Check: IsRoleServer
-
-; Admin setup tasks
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\Configure-CyberHubAdmin.ps1"" -InstallDir ""{app}"" -ServerBaseUrl ""{code:GetAdminServerUrl}"""; StatusMsg: "Saving Admin Panel server connection..."; Flags: runhidden waituntilterminated; Check: IsRoleAdmin
 Filename: "{app}\CyberHub.AdminPanel.exe"; Description: "Launch CYBER HUB ADMIN now to create your initial Admin password"; Flags: nowait postinstall skipifsilent; Check: IsRoleAdmin
-
-; Client setup tasks
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\Configure-CyberHubClient.ps1"" -InstallDir ""{app}"" -ServerBaseUrl ""{code:GetClientServerUrl}"" -SmbShareRoot ""{code:GetClientSmbRoot}""{code:GetClientAutoStartFlag}"; StatusMsg: "Configuring CYBER HUB Client Launcher and logon startup..."; Flags: runhidden waituntilterminated; Check: IsRoleClient
 
 [UninstallRun]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Stop-Service -Name 'CyberHubServerService' -Force -ErrorAction SilentlyContinue; sc.exe delete 'CyberHubServerService' | Out-Null; $i = 0; while ((Get-Process -Name 'CyberHub.ServerService' -ErrorAction SilentlyContinue) -and $i -lt 30) {{ Start-Sleep -Milliseconds 300; $i++ }; Remove-NetFirewallRule -DisplayName 'CYBER HUB Server HTTPS (LAN)' -ErrorAction SilentlyContinue"""; Flags: runhidden waituntilterminated; Check: IsRoleServer; RunOnceId: "UninstallCyberHubServerService"
@@ -67,6 +58,7 @@ var
   ServerConfigPage: TInputQueryWizardPage;
   AdminConfigPage: TInputQueryWizardPage;
   ClientConfigPage: TInputQueryWizardPage;
+  InstallFailureCode: Integer;
 
 function SelectedRoleIndex: Integer;
 begin
@@ -105,6 +97,8 @@ procedure InitializeWizard;
 var
   RoleParam: String;
 begin
+  InstallFailureCode := 0;
+
   RolePage := CreateInputOptionPage(
     wpWelcome,
     'Select Computer Role',
@@ -175,14 +169,6 @@ begin
   end;
 end;
 
-procedure CurStepChanged(CurStep: TSetupStep);
-begin
-  if CurStep = ssInstall then
-  begin
-    WizardForm.DirEdit.Text := GetInstallDir('');
-  end;
-end;
-
 function GetAdminIp(Param: String): String;
 begin
   Result := Trim(ServerConfigPage.Values[0]);
@@ -225,4 +211,107 @@ begin
     Result := ' -RegisterAutoStart'
   else
     Result := '';
+end;
+
+function RunPowerShellStep(const ScriptRelativePath, ScriptArgs, LogFileName, StatusMsg: String): Boolean;
+var
+  PsExe, CmdExe, ScriptPath, LogDir, LogPath, InnerCmd, CmdParams: String;
+  ResultCode: Integer;
+begin
+  Result := True;
+  WizardForm.StatusLabel.Caption := StatusMsg;
+  LogDir := ExpandConstant('{commonappdata}\CyberHub\Logs');
+  ForceDirectories(LogDir);
+  LogPath := LogDir + '\' + LogFileName;
+  PsExe := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  CmdExe := ExpandConstant('{cmd}');
+  ScriptPath := ExpandConstant('{app}\') + ScriptRelativePath;
+
+  InnerCmd := '"' + PsExe + '" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ScriptPath + '"';
+  if ScriptArgs <> '' then
+    InnerCmd := InnerCmd + ' ' + ScriptArgs;
+  CmdParams := '/d /c "' + InnerCmd + ' > "' + LogPath + '" 2>&1"';
+
+  Log('Executing setup script: ' + CmdExe + ' ' + CmdParams);
+  if not Exec(CmdExe, CmdParams, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    InstallFailureCode := ResultCode;
+    if InstallFailureCode = 0 then InstallFailureCode := 1;
+    Log('FAILED to launch PowerShell configuration script (' + ScriptPath + '). ExitCode=' + IntToStr(InstallFailureCode));
+    if not WizardSilent then
+      MsgBox('Setup failed to launch ' + ScriptRelativePath + ' (code ' + IntToStr(InstallFailureCode) + '). See log: ' + LogPath, mbError, MB_OK);
+    Result := False;
+    Exit;
+  end;
+
+  Log('Script completed with exit code ' + IntToStr(ResultCode) + ': ' + ScriptPath);
+  if ResultCode <> 0 then
+  begin
+    InstallFailureCode := ResultCode;
+    Log('FAILED configuration script (' + ScriptPath + ') with ExitCode=' + IntToStr(ResultCode) + '. Log: ' + LogPath);
+    if not WizardSilent then
+      MsgBox('Configuration step failed in ' + ScriptRelativePath + ' (exit code ' + IntToStr(ResultCode) + '). See log: ' + LogPath, mbError, MB_OK);
+    Result := False;
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  AppDir, ScriptArgs: String;
+begin
+  if CurStep = ssInstall then
+  begin
+    WizardForm.DirEdit.Text := GetInstallDir('');
+  end
+  else if CurStep = ssPostInstall then
+  begin
+    AppDir := ExpandConstant('{app}');
+    if IsRoleServer then
+    begin
+      ScriptArgs :=
+        '-PublishPath "' + AppDir + '" ' +
+        '-AdminWorkstationIp "' + GetAdminIp('') + '" ' +
+        '-AdminWorkstationName "' + GetAdminHost('') + '" ' +
+        '-CertificateDnsName "' + GetServerDns('') + '"';
+      if not RunPowerShellStep(
+        'scripts\Install-CyberHubServer.ps1',
+        ScriptArgs,
+        'Install-CyberHubServer.log',
+        'Configuring CYBER HUB Server Service, LAN HTTPS certificate, and firewall...') then
+        Exit;
+
+      RunPowerShellStep(
+        'scripts\Configure-NtfsSmbPermissions.ps1',
+        '',
+        'Configure-NtfsSmbPermissions.log',
+        'Applying NTFS & Read-Only SMB share permissions...');
+    end
+    else if IsRoleAdmin then
+    begin
+      ScriptArgs := '-InstallDir "' + AppDir + '" -ServerBaseUrl "' + GetAdminServerUrl('') + '"';
+      RunPowerShellStep(
+        'scripts\Configure-CyberHubAdmin.ps1',
+        ScriptArgs,
+        'Configure-CyberHubAdmin.log',
+        'Saving Admin Panel server connection...');
+    end
+    else if IsRoleClient then
+    begin
+      ScriptArgs :=
+        '-InstallDir "' + AppDir + '" ' +
+        '-ServerBaseUrl "' + GetClientServerUrl('') + '" ' +
+        '-SmbShareRoot "' + GetClientSmbRoot('') + '"' +
+        GetClientAutoStartFlag('');
+      RunPowerShellStep(
+        'scripts\Configure-CyberHubClient.ps1',
+        ScriptArgs,
+        'Configure-CyberHubClient.log',
+        'Configuring CYBER HUB Client Launcher and logon startup...');
+    end;
+  end;
+end;
+
+function GetCustomSetupExitCode: Integer;
+begin
+  Result := InstallFailureCode;
 end;

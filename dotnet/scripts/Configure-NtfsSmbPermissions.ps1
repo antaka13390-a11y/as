@@ -14,28 +14,53 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "Locking down SQLite database & backup directory ($PrivateDataPath)..." -ForegroundColor Cyan
-icacls $PrivateDataPath /inheritance:r | Out-Null
-icacls $PrivateDataPath /grant "NT AUTHORITY\SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F" | Out-Null
-$prevPref = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
-icacls $PrivateDataPath /remove "BUILTIN\Users" "Everyone" "Authenticated Users" 2>$null | Out-Null
-$ErrorActionPreference = $prevPref
-$LASTEXITCODE = 0
-
-Write-Host "Configuring Read-Only NTFS permissions on PublishedCatalog ($PublishedSharePath)..." -ForegroundColor Cyan
-New-Item -ItemType Directory -Force -Path $PublishedSharePath | Out-Null
-New-Item -ItemType Directory -Force -Path (Join-Path $PublishedSharePath "covers") | Out-Null
-New-Item -ItemType Directory -Force -Path (Join-Path $PublishedSharePath "theme-assets") | Out-Null
-icacls $PublishedSharePath /inheritance:r
-icacls $PublishedSharePath /grant "NT AUTHORITY\SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F"
-icacls $PublishedSharePath /grant "${ClientAccount}:(OI)(CI)RX"
-
-if (-not (Get-SmbShare -Name "CyberHubReadOnly$" -ErrorAction SilentlyContinue)) {
-    New-SmbShare -Name "CyberHubReadOnly$" -Path $PublishedSharePath -ReadAccess $ClientAccount -FullAccess "BUILTIN\Administrators"
-} else {
-    Revoke-SmbShareAccess -Name "CyberHubReadOnly$" -AccountName "Everyone" -Force -ErrorAction SilentlyContinue
-    Grant-SmbShareAccess -Name "CyberHubReadOnly$" -AccountName $ClientAccount -AccessRight Read -Force
+function Invoke-IcaclsChecked {
+    param(
+        [string[]]$Arguments
+    )
+    $output = & icacls @Arguments 2>&1
+    $code = $LASTEXITCODE
+    if ($output) {
+        $output | ForEach-Object { Write-Host "icacls: $_" }
+    }
+    if ($code -ne 0) {
+        throw "icacls $($Arguments -join ' ') failed with exit code $code"
+    }
 }
 
-Write-Host "NTFS & SMB read-only catalog permissions applied successfully." -ForegroundColor Green
+try {
+    Write-Host "Locking down SQLite database & backup directory ($PrivateDataPath)..." -ForegroundColor Cyan
+    New-Item -ItemType Directory -Force -Path $PrivateDataPath | Out-Null
+    Invoke-IcaclsChecked -Arguments @($PrivateDataPath, "/inheritance:r")
+    Invoke-IcaclsChecked -Arguments @($PrivateDataPath, "/grant", "NT AUTHORITY\SYSTEM:(OI)(CI)F", "BUILTIN\Administrators:(OI)(CI)F")
+
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & icacls $PrivateDataPath /remove "BUILTIN\Users" "Everyone" "Authenticated Users" 2>$null | Out-Null
+    $ErrorActionPreference = $prevPref
+    $global:LASTEXITCODE = 0
+
+    Write-Host "Configuring Read-Only NTFS permissions on PublishedCatalog ($PublishedSharePath)..." -ForegroundColor Cyan
+    New-Item -ItemType Directory -Force -Path $PublishedSharePath | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $PublishedSharePath "covers") | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $PublishedSharePath "theme-assets") | Out-Null
+    Invoke-IcaclsChecked -Arguments @($PublishedSharePath, "/inheritance:r")
+    Invoke-IcaclsChecked -Arguments @($PublishedSharePath, "/grant", "NT AUTHORITY\SYSTEM:(OI)(CI)F", "BUILTIN\Administrators:(OI)(CI)F")
+    Invoke-IcaclsChecked -Arguments @($PublishedSharePath, "/grant", "${ClientAccount}:(OI)(CI)RX")
+
+    if (-not (Get-SmbShare -Name "CyberHubReadOnly$" -ErrorAction SilentlyContinue)) {
+        New-SmbShare -Name "CyberHubReadOnly$" -Path $PublishedSharePath -ReadAccess $ClientAccount -FullAccess "BUILTIN\Administrators" | Out-Null
+    } else {
+        Revoke-SmbShareAccess -Name "CyberHubReadOnly$" -AccountName "Everyone" -Force -ErrorAction SilentlyContinue | Out-Null
+        Grant-SmbShareAccess -Name "CyberHubReadOnly$" -AccountName $ClientAccount -AccessRight Read -Force | Out-Null
+    }
+
+    $share = Get-SmbShare -Name "CyberHubReadOnly$" -ErrorAction Stop
+    Write-Host "NTFS & SMB read-only catalog permissions applied successfully (Share=$($share.Name) -> $($share.Path))." -ForegroundColor Green
+} catch {
+    Write-Host "FATAL ERROR in Configure-NtfsSmbPermissions.ps1: $($_.Exception.Message)" -ForegroundColor Red
+    if ($_.ScriptStackTrace) {
+        Write-Host $_.ScriptStackTrace -ForegroundColor Red
+    }
+    exit 1
+}

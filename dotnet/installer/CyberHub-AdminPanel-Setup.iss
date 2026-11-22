@@ -36,16 +36,18 @@ Name: "{group}\CYBER HUB ADMIN"; Filename: "{app}\CyberHub.AdminPanel.exe"; Work
 Name: "{group}\Uninstall CYBER HUB Admin Panel"; Filename: "{uninstallexe}"
 
 [Run]
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\scripts\Configure-CyberHubAdmin.ps1"" -InstallDir ""{app}"" -ServerBaseUrl ""{code:GetServerUrl}"""; StatusMsg: "Saving CYBER HUB Server connection settings..."; Flags: runhidden waituntilterminated
 Filename: "{app}\CyberHub.AdminPanel.exe"; Description: "Launch CYBER HUB ADMIN now to create your initial Admin password"; Flags: nowait postinstall skipifsilent
 
 [Code]
 var
   AdminConfigPage: TInputQueryWizardPage;
   AdminConfirmPage: TInputOptionWizardPage;
+  InstallFailureCode: Integer;
 
 procedure InitializeWizard;
 begin
+  InstallFailureCode := 0;
+
   AdminConfirmPage := CreateInputOptionPage(
     wpWelcome,
     'Administration Workstation Verification',
@@ -81,4 +83,67 @@ function GetServerUrl(Param: String): String;
 begin
   Result := Trim(AdminConfigPage.Values[0]);
   if Result = '' then Result := 'https://ccboot-srv.lan:8443';
+end;
+
+function RunPowerShellStep(const ScriptRelativePath, ScriptArgs, LogFileName, StatusMsg: String): Boolean;
+var
+  PsExe, CmdExe, ScriptPath, LogDir, LogPath, InnerCmd, CmdParams: String;
+  ResultCode: Integer;
+begin
+  Result := True;
+  WizardForm.StatusLabel.Caption := StatusMsg;
+  LogDir := ExpandConstant('{commonappdata}\CyberHub\Logs');
+  ForceDirectories(LogDir);
+  LogPath := LogDir + '\' + LogFileName;
+  PsExe := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  CmdExe := ExpandConstant('{cmd}');
+  ScriptPath := ExpandConstant('{app}\') + ScriptRelativePath;
+
+  InnerCmd := '"' + PsExe + '" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + ScriptPath + '"';
+  if ScriptArgs <> '' then
+    InnerCmd := InnerCmd + ' ' + ScriptArgs;
+  CmdParams := '/d /c "' + InnerCmd + ' > "' + LogPath + '" 2>&1"';
+
+  Log('Executing setup script: ' + CmdExe + ' ' + CmdParams);
+  if not Exec(CmdExe, CmdParams, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    InstallFailureCode := ResultCode;
+    if InstallFailureCode = 0 then InstallFailureCode := 1;
+    Log('FAILED to launch PowerShell configuration script (' + ScriptPath + '). ExitCode=' + IntToStr(InstallFailureCode));
+    if not WizardSilent then
+      MsgBox('Setup failed to launch ' + ScriptRelativePath + ' (code ' + IntToStr(InstallFailureCode) + '). See log: ' + LogPath, mbError, MB_OK);
+    Result := False;
+    Exit;
+  end;
+
+  Log('Script completed with exit code ' + IntToStr(ResultCode) + ': ' + ScriptPath);
+  if ResultCode <> 0 then
+  begin
+    InstallFailureCode := ResultCode;
+    Log('FAILED configuration script (' + ScriptPath + ') with ExitCode=' + IntToStr(ResultCode) + '. Log: ' + LogPath);
+    if not WizardSilent then
+      MsgBox('Configuration step failed in ' + ScriptRelativePath + ' (exit code ' + IntToStr(ResultCode) + '). See log: ' + LogPath, mbError, MB_OK);
+    Result := False;
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  AppDir, AdminArgs: String;
+begin
+  if CurStep = ssPostInstall then
+  begin
+    AppDir := ExpandConstant('{app}');
+    AdminArgs := '-InstallDir "' + AppDir + '" -ServerBaseUrl "' + GetServerUrl('') + '"';
+    RunPowerShellStep(
+      'scripts\Configure-CyberHubAdmin.ps1',
+      AdminArgs,
+      'Configure-CyberHubAdmin.log',
+      'Saving CYBER HUB Server connection settings...');
+  end;
+end;
+
+function GetCustomSetupExitCode: Integer;
+begin
+  Result := InstallFailureCode;
 end;
