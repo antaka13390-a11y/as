@@ -1,0 +1,8 @@
+{
+  "ServerBaseUrl": "https://ccboot-srv.lan:8443",
+  "SmbReadOnlyCatalogPath": "\\\\CCBOOT-SRV\\CyberHubReadOnly$\\catalog.json",
+  "SteamExecutablePath": "C:\\Program Files (x86)\\Steam\\steam.exe",
+  "RiotClientPath": "C:\\Riot Games\\Riot Client\\RiotClientServices.exe",
+  "RequestTimeoutSeconds": 8,
+  "AllowSelfSignedLanCert": true
+}

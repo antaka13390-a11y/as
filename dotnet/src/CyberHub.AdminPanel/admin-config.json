@@ -1,0 +1,5 @@
+{
+  "ServerBaseUrl": "https://ccboot-srv.lan:8443",
+  "AllowSelfSignedLanCert": true,
+  "RequestTimeoutSeconds": 10
+}

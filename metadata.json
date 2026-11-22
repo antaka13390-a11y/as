@@ -1,0 +1,6 @@
+{
+  "name": "CYBER HUB — Gaming Cyber Cafe Launcher",
+  "description": "CCBoot Diskless .NET 8 WPF Gaming Cyber Cafe Launcher, Central ServerService, Admin Console, and Interactive Preview.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
