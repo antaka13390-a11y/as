@@ -176,6 +176,7 @@ public sealed class SecurityAndRepositoryTests : IDisposable
 
     public void Dispose()
     {
+        _repository.Dispose();
         if (Directory.Exists(_tempDir))
         {
             Directory.Delete(_tempDir, recursive: true);

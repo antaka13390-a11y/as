@@ -18,7 +18,12 @@ public sealed class GameScannerAndCoverTests : IDisposable
 
     public GameScannerAndCoverTests()
     {
-        _tempRoot = Path.Combine(Path.GetTempPath(), $"cyberhub-scan-tests-{Guid.NewGuid():N}");
+        string baseRoot = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (string.IsNullOrWhiteSpace(baseRoot))
+        {
+            baseRoot = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        }
+        _tempRoot = Path.Combine(baseRoot, "CyberHubScanTests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_tempRoot);
 
         _options = new ServerOptions
@@ -177,6 +182,7 @@ public sealed class GameScannerAndCoverTests : IDisposable
 
     public void Dispose()
     {
+        _repository.Dispose();
         if (Directory.Exists(_tempRoot))
         {
             Directory.Delete(_tempRoot, recursive: true);

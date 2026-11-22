@@ -167,6 +167,7 @@ public sealed class ThemeAndAccountTests : IDisposable
 
     public void Dispose()
     {
+        _repository.Dispose();
         if (Directory.Exists(_tempRoot))
         {
             Directory.Delete(_tempRoot, recursive: true);

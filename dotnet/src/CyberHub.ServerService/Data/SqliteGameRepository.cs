@@ -8,7 +8,7 @@ using Microsoft.Extensions.Options;
 
 namespace CyberHub.ServerService.Data;
 
-public sealed class SqliteGameRepository
+public sealed class SqliteGameRepository : IDisposable
 {
     private readonly string _connectionString;
     private readonly ServerOptions _options;
@@ -1236,7 +1236,8 @@ public sealed class SqliteGameRepository
 
             if (isNew)
             {
-                if (string.IsNullOrWhiteSpace(theme.Id))
+                if (string.IsNullOrWhiteSpace(theme.Id) ||
+                    await GetThemeByIdInternalAsync(conn, tx, theme.Id, ct) is not null)
                 {
                     theme.Id = $"theme-{Guid.NewGuid():N}"[..18];
                 }
@@ -1956,4 +1957,13 @@ public sealed class SqliteGameRepository
         CreatedAtUtc = DateTimeOffset.Parse(reader.GetString(17)),
         UpdatedAtUtc = DateTimeOffset.Parse(reader.GetString(18))
     };
+
+    public void Dispose()
+    {
+        using (var conn = new SqliteConnection(_connectionString))
+        {
+            SqliteConnection.ClearPool(conn);
+        }
+        _writeLock.Dispose();
+    }
 }
