@@ -18,8 +18,14 @@ function Invoke-IcaclsChecked {
     param(
         [string[]]$Arguments
     )
-    $output = & icacls @Arguments 2>&1
-    $code = $LASTEXITCODE
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & icacls @Arguments 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevPref
+    }
     if ($output) {
         $output | ForEach-Object { Write-Host "icacls: $_" }
     }
@@ -29,6 +35,8 @@ function Invoke-IcaclsChecked {
 }
 
 try {
+    Import-Module SmbShare -ErrorAction SilentlyContinue
+
     Write-Host "Locking down SQLite database & backup directory ($PrivateDataPath)..." -ForegroundColor Cyan
     New-Item -ItemType Directory -Force -Path $PrivateDataPath | Out-Null
     Invoke-IcaclsChecked -Arguments @($PrivateDataPath, "/inheritance:r")

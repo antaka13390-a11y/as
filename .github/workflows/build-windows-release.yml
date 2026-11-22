@@ -246,6 +246,40 @@ jobs:
             throw "CyberHubServerService failed to reach Running state: $($svc.Status)"
           }
 
+          # Verify generated PFX & LocalMachine\My certificate store placement without Cert: PSDrive
+          $serverCfg = Get-Content "C:\CyberHub\ServerService\appsettings.json" -Raw | ConvertFrom-Json
+          $certPath = $serverCfg.Kestrel.Endpoints.Https.Certificate.Path
+          $certPwd = $serverCfg.Kestrel.Endpoints.Https.Certificate.Password
+          if (-not (Test-Path $certPath)) { throw "Generated HTTPS PFX missing at $certPath" }
+          $pfxCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+            $certPath,
+            $certPwd,
+            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::MachineKeySet
+          )
+          $smokeCertThumbprint = $pfxCert.Thumbprint
+          if (-not $pfxCert.HasPrivateKey) { throw "PFX certificate missing private key." }
+          $pfxPub = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPublicKey($pfxCert)
+          if ($null -eq $pfxPub -or $pfxPub.KeySize -ne 2048) { throw "Expected RSA 2048-bit key on server PFX." }
+          if ($pfxCert.SignatureAlgorithm.FriendlyName -notmatch "sha256") { throw "Expected SHA-256 on server PFX, got $($pfxCert.SignatureAlgorithm.FriendlyName)." }
+          $pfxCert.Dispose()
+
+          $lmStore = [System.Security.Cryptography.X509Certificates.X509Store]::new(
+            [System.Security.Cryptography.X509Certificates.StoreName]::My,
+            [System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine
+          )
+          $lmStore.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+          try {
+            $lmFound = $lmStore.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $smokeCertThumbprint, $false)
+            if ($lmFound.Count -lt 1) { throw "Server certificate $smokeCertThumbprint missing from LocalMachine\My store!" }
+            $lmStored = $lmFound[0]
+            if (-not $lmStored.HasPrivateKey) { throw "LocalMachine\My certificate $smokeCertThumbprint has no private key!" }
+            $lmSan = ($lmStored.Extensions | Where-Object { $_.Oid.Value -eq "2.5.29.17" } | Select-Object -First 1).Format($false)
+            if ($lmSan -notmatch "localhost") { throw "LocalMachine\My certificate SAN missing 'localhost': $lmSan" }
+            Write-Host "Verified LocalMachine\My certificate ($smokeCertThumbprint) with RSA 2048, SHA-256, and SAN: $lmSan"
+          } finally {
+            $lmStore.Close()
+          }
+
           $catalog = $null
           for ($attempt = 0; $attempt -lt 20; $attempt++) {
             try {
@@ -313,6 +347,19 @@ jobs:
             throw "CyberHubServerService still exists after uninstall."
           }
           Remove-Item -Path "C:\ProgramData\CyberHub" -Recurse -Force -ErrorAction SilentlyContinue
+          if ($smokeCertThumbprint) {
+            $cleanupStore = [System.Security.Cryptography.X509Certificates.X509Store]::new(
+              [System.Security.Cryptography.X509Certificates.StoreName]::My,
+              [System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine
+            )
+            $cleanupStore.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+            try {
+              $cleanupStore.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $smokeCertThumbprint, $false) |
+                ForEach-Object { $cleanupStore.Remove($_) }
+            } finally {
+              $cleanupStore.Close()
+            }
+          }
 
           Write-Host "=== 2. Verifying CyberHub-AdminPanel-Setup.exe ==="
           $adminInnoLog = Join-Path $logDir "admin-setup-inno.log"
