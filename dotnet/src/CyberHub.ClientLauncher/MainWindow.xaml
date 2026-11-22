@@ -1,191 +1,417 @@
 <Window x:Class="CyberHub.ClientLauncher.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="CYBER HUB"
+        Title="{Binding WindowDisplayTitle}"
         WindowStyle="None"
         WindowState="Maximized"
         ResizeMode="NoResize"
-        Background="{StaticResource BgPrimaryBrush}"
-        Foreground="{StaticResource TextPrimaryBrush}"
+        FlowDirection="{Binding Loc.CurrentFlowDirection}"
+        Background="{Binding WindowBackgroundBrush}"
+        Foreground="{Binding PrimaryTextBrush}"
         Width="1920"
         Height="1080">
     <Grid>
-        <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="260" />
-            <ColumnDefinition Width="*" />
-        </Grid.ColumnDefinitions>
+        <!-- Layer 1: Dynamic Theme Background (Image / Optional Video / Gradient / Solid + Blur & Overlay) -->
+        <Grid IsHitTestVisible="False">
+            <Image Source="{Binding ResolvedBackgroundImageUri}"
+                   Stretch="{Binding BackgroundStretchMode}"
+                   Opacity="{Binding BackgroundMediaOpacity}"
+                   Visibility="{Binding ShowBackgroundImageLayer, Converter={StaticResource BoolToVis}}">
+                <Image.Effect>
+                    <BlurEffect Radius="{Binding BackgroundBlurRadius}" />
+                </Image.Effect>
+            </Image>
 
-        <!-- Left Navigation Rail (Customer-Only: Zero Admin Controls) -->
-        <Border Grid.Column="0" Background="{StaticResource BgSurfaceBrush}" BorderBrush="{StaticResource BorderHairlineBrush}" BorderThickness="0,0,1,0" Padding="24,32">
-            <DockPanel LastChildFill="True">
-                <StackPanel DockPanel.Dock="Top" Margin="0,0,0,36">
-                    <TextBlock Text="CYBER HUB" FontFamily="Segoe UI Black" FontSize="26" Foreground="{StaticResource TextPrimaryBrush}" />
-                    <TextBlock Text="GAME LAUNCHER" FontSize="11" Foreground="{StaticResource AccentCyanBrush}" Margin="0,4,0,0" />
-                </StackPanel>
+            <MediaElement x:Name="BackgroundVideoPlayer"
+                          LoadedBehavior="Manual"
+                          UnloadedBehavior="Stop"
+                          IsMuted="True"
+                          Stretch="UniformToFill"
+                          Opacity="{Binding BackgroundMediaOpacity}"
+                          Visibility="{Binding ShouldPlayVideoBackground, Converter={StaticResource BoolToVis}}"
+                          MediaEnded="BackgroundVideoPlayer_MediaEnded">
+                <MediaElement.Effect>
+                    <BlurEffect Radius="{Binding BackgroundBlurRadius}" />
+                </MediaElement.Effect>
+            </MediaElement>
 
-                <StackPanel DockPanel.Dock="Top">
-                    <Button Content="Home" Style="{StaticResource NavButtonStyle}" Command="{Binding NavigateCommand}" CommandParameter="Home" />
-                    <Button Content="All Games" Style="{StaticResource NavButtonStyle}" Command="{Binding NavigateCommand}" CommandParameter="AllGames" />
-                    <Button Content="Favorites" Style="{StaticResource NavButtonStyle}" Command="{Binding NavigateCommand}" CommandParameter="Favorites" />
-                    <Button Content="Recently Played" Style="{StaticResource NavButtonStyle}" Command="{Binding NavigateCommand}" CommandParameter="RecentlyPlayed" />
-                </StackPanel>
-
-                <StackPanel DockPanel.Dock="Bottom" VerticalAlignment="Bottom">
-                    <TextBlock Text="{Binding CatalogSourceLabel}" FontSize="12" Foreground="{StaticResource TextMutedBrush}" TextTrimming="CharacterEllipsis" />
-                    <Button Content="Sync Catalog" Style="{StaticResource NavButtonStyle}" Margin="0,10,0,0" Command="{Binding RefreshCatalogCommand}" />
-                </StackPanel>
-            </DockPanel>
-        </Border>
-
-        <!-- Main Viewport -->
-        <Grid Grid.Column="1" Margin="36,28,36,28">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="*" />
-            </Grid.RowDefinitions>
-
-            <!-- Top Search & Category Bar -->
-            <DockPanel Grid.Row="0" Margin="0,0,0,24">
-                <TextBlock Text="{Binding SectionTitle}" FontFamily="Segoe UI Bold" FontSize="28" VerticalAlignment="Center" />
-
-                <Border DockPanel.Dock="Right" Width="360" Background="{StaticResource BgElevatedBrush}" BorderBrush="{StaticResource BorderHairlineBrush}" BorderThickness="1" CornerRadius="8" Padding="14,8">
-                    <TextBox Text="{Binding SearchQuery, UpdateSourceTrigger=PropertyChanged}"
-                             Background="Transparent"
-                             Foreground="{StaticResource TextPrimaryBrush}"
-                             BorderThickness="0"
-                             FontSize="14"
-                             CaretBrush="{StaticResource AccentCyanBrush}" />
-                </Border>
-            </DockPanel>
-
-            <!-- Offline / Launch Feedback Banner -->
-            <Border Grid.Row="1"
-                    Background="#1D162B"
-                    BorderBrush="{StaticResource AccentPurpleBrush}"
-                    BorderThickness="1"
-                    CornerRadius="8"
-                    Padding="16,10"
-                    Margin="0,0,0,20"
-                    Visibility="{Binding StatusMessage.Length, Converter={StaticResource BoolToVis}}">
-                <TextBlock Text="{Binding StatusMessage}" FontSize="13" Foreground="{StaticResource TextPrimaryBrush}" />
-            </Border>
-
-            <!-- Scrollable Content Area -->
-            <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
-                <StackPanel>
-                    <!-- Featured Hero Banner -->
-                    <Border Background="{StaticResource BgElevatedBrush}" BorderBrush="{StaticResource BorderHairlineBrush}" BorderThickness="1" CornerRadius="14" Height="340" Margin="0,0,0,28" ClipToBounds="True">
-                        <Grid>
-                            <Image Source="{Binding FeaturedGame.ResolvedHeroUri}" Stretch="UniformToFill" Opacity="0.48" />
-                            <Border>
-                                <Border.Background>
-                                    <LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5">
-                                        <GradientStop Color="#EE08090D" Offset="0.0" />
-                                        <GradientStop Color="#9908090D" Offset="0.55" />
-                                        <GradientStop Color="#2208090D" Offset="1.0" />
-                                    </LinearGradientBrush>
-                                </Border.Background>
-                            </Border>
-
-                            <StackPanel VerticalAlignment="Center" Margin="44,0,44,0" MaxWidth="680" HorizontalAlignment="Left">
-                                <TextBlock Text="{Binding FeaturedGame.Entry.Category}" FontSize="12" Foreground="{StaticResource AccentCyanBrush}" FontFamily="Segoe UI Semibold" />
-                                <TextBlock Text="{Binding FeaturedGame.Entry.Name}" FontFamily="Segoe UI Black" FontSize="42" Margin="0,6,0,10" TextTrimming="CharacterEllipsis" />
-                                <TextBlock Text="{Binding FeaturedGame.Entry.Description}" FontSize="15" Foreground="{StaticResource TextMutedBrush}" TextWrapping="Wrap" MaxHeight="64" Margin="0,0,0,22" />
-                                <StackPanel Orientation="Horizontal">
-                                    <Button Content="PLAY NOW" Style="{StaticResource PlayCtaButtonStyle}" Command="{Binding PlayGameCommand}" CommandParameter="{Binding FeaturedGame}" />
-                                    <Button Content="Details" Style="{StaticResource NavButtonStyle}" Margin="14,0,0,0" Command="{Binding SelectGameCommand}" CommandParameter="{Binding FeaturedGame}" />
-                                </StackPanel>
-                            </StackPanel>
-                        </Grid>
-                    </Border>
-
-                    <!-- Category Filter Strip -->
-                    <ItemsControl ItemsSource="{Binding Categories}" Margin="0,0,0,20">
-                        <ItemsControl.ItemsPanel>
-                            <ItemsPanelTemplate>
-                                <StackPanel Orientation="Horizontal" />
-                            </ItemsPanelTemplate>
-                        </ItemsControl.ItemsPanel>
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <Button Content="{Binding}"
-                                        Margin="0,0,10,0"
-                                        Padding="16,8"
-                                        Background="{StaticResource BgElevatedBrush}"
-                                        Foreground="{StaticResource TextPrimaryBrush}"
-                                        BorderBrush="{StaticResource BorderHairlineBrush}"
-                                        BorderThickness="1"
-                                        Command="{Binding DataContext.SelectCategoryCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                        CommandParameter="{Binding}" />
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-
-                    <!-- Large Game Cover Artwork Grid -->
-                    <ItemsControl ItemsSource="{Binding FilteredGames}">
-                        <ItemsControl.ItemsPanel>
-                            <ItemsPanelTemplate>
-                                <WrapPanel Orientation="Horizontal" />
-                            </ItemsPanelTemplate>
-                        </ItemsControl.ItemsPanel>
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <Border Width="252" Height="380" Margin="0,0,22,22" Background="{StaticResource BgSurfaceBrush}" BorderBrush="{StaticResource BorderHairlineBrush}" BorderThickness="1" CornerRadius="12" ClipToBounds="True" Cursor="Hand">
-                                    <Border.InputBindings>
-                                        <MouseBinding MouseAction="LeftClick"
-                                                      Command="{Binding DataContext.SelectGameCommand, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                      CommandParameter="{Binding}" />
-                                    </Border.InputBindings>
-                                    <Grid>
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="285" />
-                                            <RowDefinition Height="*" />
-                                        </Grid.RowDefinitions>
-
-                                        <Image Grid.Row="0" Source="{Binding ResolvedCoverUri}" Stretch="UniformToFill" />
-
-                                        <StackPanel Grid.Row="1" Margin="14,12,14,12">
-                                            <TextBlock Text="{Binding Entry.Name}" FontFamily="Segoe UI Semibold" FontSize="16" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Text="{Binding Entry.Category}" FontSize="12" Foreground="{StaticResource TextMutedBrush}" Margin="0,4,0,0" />
-                                        </StackPanel>
-                                    </Grid>
-                                </Border>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                </StackPanel>
-            </ScrollViewer>
+            <Border Background="{Binding OverlayScrimBrush}" />
         </Grid>
 
-        <!-- Game Details Slide-Over Drawer -->
-        <Border Grid.Column="1"
-                HorizontalAlignment="Right"
-                Width="460"
-                Background="{StaticResource BgSurfaceBrush}"
-                BorderBrush="{StaticResource BorderHairlineBrush}"
-                BorderThickness="1,0,0,0"
-                Padding="32"
-                Visibility="{Binding SelectedGame, Converter={StaticResource BoolToVis}}">
-            <DockPanel LastChildFill="True">
-                <Button DockPanel.Dock="Top" HorizontalAlignment="Right" Content="Close" Style="{StaticResource NavButtonStyle}" Command="{Binding CloseDetailsCommand}" />
+        <!-- Layer 2: Dynamic Sidebar + Main Viewport (Customer-Only: Zero Admin/Dev/Favorites UI) -->
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="{Binding SidebarLeftColumnWidth}" />
+                <ColumnDefinition Width="{Binding SidebarRightColumnWidth}" />
+            </Grid.ColumnDefinitions>
 
-                <StackPanel DockPanel.Dock="Bottom" Margin="0,24,0,0">
-                    <Button Content="PLAY GAME" Style="{StaticResource PlayCtaButtonStyle}" Command="{Binding PlayGameCommand}" CommandParameter="{Binding SelectedGame}" />
-                    <Button Content="Toggle Favorite" Style="{StaticResource NavButtonStyle}" Margin="0,10,0,0" Command="{Binding ToggleFavoriteCommand}" CommandParameter="{Binding SelectedGame}" />
-                </StackPanel>
+            <!-- Navigation Rail with Dynamic Custom Branding -->
+            <Border Grid.Column="{Binding SidebarGridColumn}"
+                    Background="{Binding SidebarBackgroundBrush}"
+                    BorderBrush="{Binding BorderBrushDynamic}"
+                    BorderThickness="0,0,1,0"
+                    Padding="24,28">
+                <DockPanel LastChildFill="True">
+                    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,28">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Image Source="{Binding ResolvedLogoUri}"
+                                   Width="{Binding LogoSizePx}"
+                                   Height="{Binding LogoSizePx}"
+                                   Stretch="Uniform"
+                                   Margin="0,0,12,0"
+                                   Visibility="{Binding HasCustomLogo, Converter={StaticResource BoolToVis}}" />
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="{Binding AppDisplayName}"
+                                           FontFamily="Segoe UI Black"
+                                           FontSize="24"
+                                           Foreground="{Binding PrimaryTextBrush}"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBlock Text="{Binding CafeDisplayName}"
+                                           FontSize="12"
+                                           Foreground="{Binding SecondaryAccentBrush}"
+                                           Margin="0,3,0,0"
+                                           TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </StackPanel>
+                        <TextBlock Text="{Binding WelcomeDisplayTitle}"
+                                   FontSize="12"
+                                   Foreground="{Binding SecondaryTextBrush}"
+                                   Margin="0,10,0,0"
+                                   TextWrapping="Wrap" />
+                    </StackPanel>
 
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel>
-                        <Border Height="260" CornerRadius="10" ClipToBounds="True" Margin="0,16,0,20" Background="{StaticResource BgElevatedBrush}">
-                            <Image Source="{Binding SelectedGame.ResolvedCoverUri}" Stretch="UniformToFill" />
+                    <StackPanel DockPanel.Dock="Bottom" VerticalAlignment="Bottom" Margin="0,16,0,0">
+                        <Button Content="{Binding Loc[Nav.SyncCatalog]}"
+                                Style="{StaticResource NavButtonStyle}"
+                                Foreground="{Binding SecondaryTextBrush}"
+                                Command="{Binding RefreshCatalogCommand}" />
+                    </StackPanel>
+
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <Button Content="{Binding Loc[Nav.Home]}"
+                                    Style="{StaticResource NavButtonStyle}"
+                                    Foreground="{Binding PrimaryTextBrush}"
+                                    Command="{Binding NavigateHomeCommand}" />
+                            <Button Content="{Binding Loc[Nav.RecentlyPlayed]}"
+                                    Style="{StaticResource NavButtonStyle}"
+                                    Foreground="{Binding SecondaryTextBrush}"
+                                    Command="{Binding NavigateRecentCommand}" />
+
+                            <TextBlock Text="{Binding Loc[Nav.Categories]}"
+                                       FontSize="11"
+                                       Foreground="{Binding SecondaryTextBrush}"
+                                       Margin="18,22,18,8" />
+
+                            <ItemsControl ItemsSource="{Binding DynamicCategories}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Content="{Binding DisplayName}"
+                                                Style="{StaticResource NavButtonStyle}"
+                                                Foreground="{Binding DataContext.SecondaryTextBrush, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                Command="{Binding DataContext.SelectCategoryCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                CommandParameter="{Binding}" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+
+            <!-- Main Content Viewport -->
+            <Grid Grid.Column="{Binding ContentGridColumn}" Margin="{Binding MainContentMargin}">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <!-- Top Header Bar: Section Title + Search + AR/EN Language Switcher -->
+                <DockPanel Grid.Row="0" Margin="0,0,0,20">
+                    <TextBlock Text="{Binding SectionTitle}"
+                               FontFamily="Segoe UI Bold"
+                               FontSize="28"
+                               Foreground="{Binding PrimaryTextBrush}"
+                               VerticalAlignment="Center" />
+
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Border Width="320"
+                                Background="{Binding CardBackgroundBrush}"
+                                BorderBrush="{Binding BorderBrushDynamic}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="14,8"
+                                Margin="0,0,12,0">
+                            <TextBox Text="{Binding SearchQuery, UpdateSourceTrigger=PropertyChanged}"
+                                     Background="Transparent"
+                                     Foreground="{Binding PrimaryTextBrush}"
+                                     BorderThickness="0"
+                                     FontSize="14"
+                                     CaretBrush="{Binding SecondaryAccentBrush}" />
                         </Border>
-                        <TextBlock Text="{Binding SelectedGame.Entry.Name}" FontFamily="Segoe UI Bold" FontSize="26" TextWrapping="Wrap" />
-                        <TextBlock Text="{Binding SelectedGame.Entry.Category}" FontSize="13" Foreground="{StaticResource AccentCyanBrush}" Margin="0,6,0,14" />
-                        <TextBlock Text="{Binding SelectedGame.Entry.Description}" FontSize="14" Foreground="{StaticResource TextMutedBrush}" TextWrapping="Wrap" LineHeight="22" />
+
+                        <Button Content="{Binding Loc[Lang.SwitchLabel]}"
+                                Padding="16,10"
+                                Background="{Binding CardBackgroundBrush}"
+                                Foreground="{Binding SecondaryAccentBrush}"
+                                BorderBrush="{Binding BorderBrushDynamic}"
+                                BorderThickness="1"
+                                FontFamily="Segoe UI Semibold"
+                                Cursor="Hand"
+                                Command="{Binding ToggleLanguageCommand}" />
+                    </StackPanel>
+                </DockPanel>
+
+                <!-- Single Game Session Active Lock Banner -->
+                <Border Grid.Row="1"
+                        Background="#1B122E"
+                        BorderBrush="{Binding PrimaryAccentBrush}"
+                        BorderThickness="1"
+                        CornerRadius="10"
+                        Padding="18,14"
+                        Margin="0,0,0,16"
+                        Visibility="{Binding IsSessionLocked, Converter={StaticResource BoolToVis}}">
+                    <StackPanel>
+                        <TextBlock Text="{Binding ActiveSessionBannerText}"
+                                   FontFamily="Segoe UI Bold"
+                                   FontSize="15"
+                                   Foreground="{Binding PrimaryTextBrush}" />
+                        <TextBlock Text="{Binding Loc[Session.LockNotice]}"
+                                   FontSize="12"
+                                   Foreground="{Binding SecondaryTextBrush}"
+                                   Margin="0,4,0,0" />
+
+                        <!-- Controlled Admin Recovery Panel (shown only when process tracking failed safely) -->
+                        <StackPanel Margin="0,12,0,0" Visibility="{Binding RequiresAdminRecovery, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="{Binding Loc[Session.RecoveryRequired]}" FontSize="12" Foreground="#FCA5A5" Margin="0,0,0,8" TextWrapping="Wrap" />
+                            <StackPanel Orientation="Horizontal">
+                                <TextBox Text="{Binding RecoveryCodeInput, UpdateSourceTrigger=PropertyChanged}" Width="220" Height="34" Padding="10,6" Background="#0D0F16" Foreground="#F8FAFC" BorderBrush="#4C1D95" BorderThickness="1" Margin="0,0,10,0" />
+                                <Button Content="{Binding Loc[Session.ConfirmUnlock]}" Padding="14,8" Background="{Binding ButtonBackgroundBrush}" Foreground="{Binding ButtonTextBrush}" BorderThickness="0" Command="{Binding SubmitRecoveryUnlockCommand}" />
+                            </StackPanel>
+                            <TextBlock Text="{Binding RecoveryError}" FontSize="12" Foreground="#FCA5A5" Margin="0,6,0,0" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- Status / Offline Feedback Banner -->
+                <Border Grid.Row="2"
+                        Background="{Binding CardBackgroundBrush}"
+                        BorderBrush="{Binding BorderBrushDynamic}"
+                        BorderThickness="1"
+                        CornerRadius="8"
+                        Padding="16,10"
+                        Margin="0,0,0,16"
+                        Visibility="{Binding HasStatusMessage, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="{Binding StatusMessage}" FontSize="13" Foreground="{Binding SecondaryAccentBrush}" />
+                </Border>
+
+                <!-- Scrollable Content Area -->
+                <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <!-- Featured Hero Banner -->
+                        <Border Background="{Binding CardBackgroundBrush}"
+                                BorderBrush="{Binding BorderBrushDynamic}"
+                                BorderThickness="1"
+                                CornerRadius="14"
+                                Height="320"
+                                Margin="0,0,0,26"
+                                ClipToBounds="True"
+                                Visibility="{Binding HasFeaturedGame, Converter={StaticResource BoolToVis}}">
+                            <Grid>
+                                <Image Source="{Binding FeaturedGame.ResolvedHeroUri}" Stretch="UniformToFill" Opacity="0.48" />
+                                <Border>
+                                    <Border.Background>
+                                        <LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5">
+                                            <GradientStop Color="#EE08090D" Offset="0.0" />
+                                            <GradientStop Color="#9908090D" Offset="0.55" />
+                                            <GradientStop Color="#2208090D" Offset="1.0" />
+                                        </LinearGradientBrush>
+                                    </Border.Background>
+                                </Border>
+
+                                <StackPanel VerticalAlignment="Center" Margin="44,0,44,0" MaxWidth="680" HorizontalAlignment="Left">
+                                    <TextBlock FontSize="12" Foreground="{Binding SecondaryAccentBrush}" FontFamily="Segoe UI Semibold">
+                                        <Run Text="{Binding FeaturedGame.CategorySummary}" />
+                                        <Run Text=" · " />
+                                        <Run Text="{Binding FeaturedGame.NetworkModeLabel}" />
+                                    </TextBlock>
+                                    <TextBlock Text="{Binding FeaturedGame.Entry.Name}"
+                                               FontFamily="Segoe UI Black"
+                                               FontSize="40"
+                                               Foreground="{Binding PrimaryTextBrush}"
+                                               Margin="0,6,0,10"
+                                               TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding FeaturedGame.Entry.Description}"
+                                               FontSize="15"
+                                               Foreground="{Binding SecondaryTextBrush}"
+                                               TextWrapping="Wrap"
+                                               MaxHeight="64"
+                                               Margin="0,0,0,22" />
+                                    <StackPanel Orientation="Horizontal">
+                                        <Button Content="{Binding Loc[Action.PlayNow]}"
+                                                Background="{Binding ButtonBackgroundBrush}"
+                                                Foreground="{Binding ButtonTextBrush}"
+                                                FontFamily="Segoe UI Bold"
+                                                FontSize="16"
+                                                Padding="32,14"
+                                                BorderThickness="0"
+                                                Cursor="Hand"
+                                                IsEnabled="{Binding CanPlayGames}"
+                                                Command="{Binding PlayGameCommand}"
+                                                CommandParameter="{Binding FeaturedGame}" />
+                                        <Button Content="{Binding Loc[Action.Details]}"
+                                                Style="{StaticResource NavButtonStyle}"
+                                                Foreground="{Binding PrimaryTextBrush}"
+                                                Margin="14,0,0,0"
+                                                Command="{Binding SelectGameCommand}"
+                                                CommandParameter="{Binding FeaturedGame}" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- Dynamic Theme-Driven Game Cover Grid -->
+                        <ItemsControl ItemsSource="{Binding FilteredGames}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <UniformGrid Columns="{Binding GridColumns}" VerticalAlignment="Top" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Height="{Binding DataContext.CardHeight, RelativeSource={RelativeSource AncestorType=Window}}"
+                                            Margin="{Binding DataContext.CardMargin, RelativeSource={RelativeSource AncestorType=Window}}"
+                                            Background="{Binding DataContext.CardBackgroundBrush, RelativeSource={RelativeSource AncestorType=Window}}"
+                                            BorderBrush="{Binding DataContext.BorderBrushDynamic, RelativeSource={RelativeSource AncestorType=Window}}"
+                                            BorderThickness="1"
+                                            CornerRadius="{Binding DataContext.CardCornerRadius, RelativeSource={RelativeSource AncestorType=Window}}"
+                                            ClipToBounds="True"
+                                            Cursor="Hand">
+                                        <Border.InputBindings>
+                                            <MouseBinding MouseAction="LeftClick"
+                                                          Command="{Binding DataContext.SelectGameCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                          CommandParameter="{Binding}" />
+                                        </Border.InputBindings>
+                                        <Grid>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="*" />
+                                                <RowDefinition Height="Auto" />
+                                            </Grid.RowDefinitions>
+
+                                            <Image Grid.Row="0" Source="{Binding ResolvedCoverUri}" Stretch="UniformToFill" />
+
+                                            <StackPanel Grid.Row="1" Margin="14,12,14,12">
+                                                <TextBlock Text="{Binding Entry.Name}"
+                                                           FontFamily="Segoe UI Semibold"
+                                                           FontSize="{Binding DataContext.TitleFontSize, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                           Foreground="{Binding DataContext.PrimaryTextBrush, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock FontSize="12"
+                                                           Foreground="{Binding DataContext.SecondaryTextBrush, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                           Margin="0,4,0,0"
+                                                           TextTrimming="CharacterEllipsis">
+                                                    <Run Text="{Binding CategorySummary}" />
+                                                    <Run Text=" · " />
+                                                    <Run Text="{Binding NetworkModeLabel}" />
+                                                </TextBlock>
+                                                <TextBlock Text="{Binding Entry.Description}"
+                                                           FontSize="11"
+                                                           Foreground="{Binding DataContext.SecondaryTextBrush, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                           Margin="0,6,0,0"
+                                                           MaxHeight="34"
+                                                           TextWrapping="Wrap"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           Visibility="{Binding DataContext.ShowDescriptionOnCard, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
                     </StackPanel>
                 </ScrollViewer>
-            </DockPanel>
-        </Border>
+            </Grid>
+
+            <!-- Game Details Slide-Over Drawer (No Favorites Button) -->
+            <Border Grid.Column="{Binding ContentGridColumn}"
+                    HorizontalAlignment="Right"
+                    Width="460"
+                    Background="{Binding SidebarBackgroundBrush}"
+                    BorderBrush="{Binding BorderBrushDynamic}"
+                    BorderThickness="1,0,0,0"
+                    Padding="32"
+                    Visibility="{Binding HasSelectedGame, Converter={StaticResource BoolToVis}}">
+                <DockPanel LastChildFill="True">
+                    <Button DockPanel.Dock="Top"
+                            HorizontalAlignment="Right"
+                            Content="{Binding Loc[Action.Close]}"
+                            Style="{StaticResource NavButtonStyle}"
+                            Foreground="{Binding PrimaryTextBrush}"
+                            Command="{Binding CloseDetailsCommand}" />
+
+                    <StackPanel DockPanel.Dock="Bottom" Margin="0,24,0,0">
+                        <Button Content="{Binding Loc[Action.PlayGame]}"
+                                Background="{Binding ButtonBackgroundBrush}"
+                                Foreground="{Binding ButtonTextBrush}"
+                                FontFamily="Segoe UI Bold"
+                                FontSize="16"
+                                Padding="32,14"
+                                BorderThickness="0"
+                                Cursor="Hand"
+                                IsEnabled="{Binding CanPlayGames}"
+                                Command="{Binding PlayGameCommand}"
+                                CommandParameter="{Binding SelectedGame}" />
+                    </StackPanel>
+
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <Border Height="260" CornerRadius="10" ClipToBounds="True" Margin="0,16,0,20" Background="{Binding CardBackgroundBrush}">
+                                <Image Source="{Binding SelectedGame.ResolvedCoverUri}" Stretch="UniformToFill" />
+                            </Border>
+                            <TextBlock Text="{Binding SelectedGame.Entry.Name}"
+                                       FontFamily="Segoe UI Bold"
+                                       FontSize="26"
+                                       Foreground="{Binding PrimaryTextBrush}"
+                                       TextWrapping="Wrap" />
+                            <TextBlock FontSize="13" Foreground="{Binding SecondaryAccentBrush}" Margin="0,6,0,14">
+                                <Run Text="{Binding SelectedGame.CategorySummary}" />
+                                <Run Text=" · " />
+                                <Run Text="{Binding SelectedGame.NetworkModeLabel}" />
+                            </TextBlock>
+                            <TextBlock Text="{Binding SelectedGame.Entry.Description}"
+                                       FontSize="14"
+                                       Foreground="{Binding SecondaryTextBrush}"
+                                       TextWrapping="Wrap"
+                                       LineHeight="22" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+        </Grid>
+
+        <!-- Layer 3: Branded Loading Overlay -->
+        <Grid Background="{Binding WindowBackgroundBrush}"
+              Visibility="{Binding IsLoadingCatalog, Converter={StaticResource BoolToVis}}">
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                <Image Source="{Binding ResolvedLoadingLogoUri}"
+                       Width="96"
+                       Height="96"
+                       Stretch="Uniform"
+                       Margin="0,0,0,18"
+                       Visibility="{Binding HasLoadingLogo, Converter={StaticResource BoolToVis}}" />
+                <TextBlock Text="{Binding AppDisplayName}"
+                           FontFamily="Segoe UI Black"
+                           FontSize="34"
+                           Foreground="{Binding PrimaryTextBrush}"
+                           HorizontalAlignment="Center" />
+                <TextBlock Text="{Binding LoadingDisplayTitle}"
+                           FontSize="15"
+                           Foreground="{Binding SecondaryAccentBrush}"
+                           Margin="0,10,0,0"
+                           HorizontalAlignment="Center" />
+            </StackPanel>
+        </Grid>
     </Grid>
 </Window>

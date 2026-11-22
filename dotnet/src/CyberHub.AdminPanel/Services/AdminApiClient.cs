@@ -11,32 +11,54 @@ public sealed class AdminConfig
 {
     public string ServerBaseUrl { get; set; } = "https://ccboot-srv.lan:8443";
     public bool AllowSelfSignedLanCert { get; set; } = true;
-    public int RequestTimeoutSeconds { get; set; } = 10;
+    public int RequestTimeoutSeconds { get; set; } = 15;
 }
 
 public sealed class AdminApiClient : IDisposable
 {
     private readonly HttpClient _httpClient;
+    private readonly AdminConfig _config;
     private string _accessToken = string.Empty;
 
     public AdminApiClient()
     {
-        AdminConfig config = LoadConfig();
+        _config = LoadConfig();
         var handler = new HttpClientHandler();
-        if (config.AllowSelfSignedLanCert)
+        if (_config.AllowSelfSignedLanCert)
         {
             handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
         }
 
         _httpClient = new HttpClient(handler)
         {
-            BaseAddress = new Uri(config.ServerBaseUrl.TrimEnd('/') + "/"),
-            Timeout = TimeSpan.FromSeconds(Math.Clamp(config.RequestTimeoutSeconds, 3, 30))
+            BaseAddress = new Uri(_config.ServerBaseUrl.TrimEnd('/') + "/"),
+            Timeout = TimeSpan.FromSeconds(Math.Clamp(_config.RequestTimeoutSeconds, 3, 60))
         };
         _httpClient.DefaultRequestHeaders.Add("X-CyberHub-Workstation", Environment.MachineName);
     }
 
     public bool IsAuthenticated => !string.IsNullOrWhiteSpace(_accessToken);
+
+    public string ResolveServerAssetUrl(string? rawPath)
+    {
+        if (string.IsNullOrWhiteSpace(rawPath))
+        {
+            return string.Empty;
+        }
+
+        if (rawPath.StartsWith("/", StringComparison.Ordinal))
+        {
+            return _config.ServerBaseUrl.TrimEnd('/') + rawPath;
+        }
+
+        return rawPath;
+    }
+
+    public void ClearSession()
+    {
+        _accessToken = string.Empty;
+        _httpClient.DefaultRequestHeaders.Authorization = null;
+    }
 
     private static AdminConfig LoadConfig()
     {
@@ -48,6 +70,7 @@ public sealed class AdminApiClient : IDisposable
         return JsonSerializer.Deserialize<AdminConfig>(File.ReadAllText(path)) ?? new AdminConfig();
     }
 
+    // Auth & Security
     public async Task<AdminStatusResponse> GetStatusAsync(CancellationToken ct = default)
     {
         HttpResponseMessage resp = await _httpClient.GetAsync("api/admin/status", ct);
@@ -73,20 +96,121 @@ public sealed class AdminApiClient : IDisposable
         return login;
     }
 
-    public void Logout()
+    public async Task<ChangePasswordResponse> ChangePasswordAsync(
+        string currentPassword,
+        string newPassword,
+        string confirmNewPassword,
+        CancellationToken ct = default)
     {
-        _accessToken = string.Empty;
-        _httpClient.DefaultRequestHeaders.Authorization = null;
+        HttpResponseMessage resp = await _httpClient.PostAsJsonAsync("api/admin/change-password", new ChangePasswordRequest
+        {
+            CurrentPassword = currentPassword,
+            NewPassword = newPassword,
+            ConfirmNewPassword = confirmNewPassword
+        }, ct);
+
+        string rawBody = await resp.Content.ReadAsStringAsync(ct);
+        ChangePasswordResponse? body = null;
+        if (!string.IsNullOrWhiteSpace(rawBody))
+        {
+            try
+            {
+                body = JsonSerializer.Deserialize<ChangePasswordResponse>(rawBody, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                });
+            }
+            catch (JsonException)
+            {
+                // Fall back cleanly
+            }
+        }
+
+        if (!resp.IsSuccessStatusCode)
+        {
+            if (!string.IsNullOrWhiteSpace(body?.Message))
+            {
+                throw new InvalidOperationException(body.Message);
+            }
+
+            try
+            {
+                using JsonDocument doc = JsonDocument.Parse(rawBody);
+                if (doc.RootElement.TryGetProperty("error", out JsonElement err) &&
+                    !string.IsNullOrWhiteSpace(err.GetString()))
+                {
+                    throw new InvalidOperationException(err.GetString());
+                }
+            }
+            catch (JsonException)
+            {
+                // Fall through to HTTP status fallback
+            }
+
+            throw new InvalidOperationException($"Server returned HTTP {(int)resp.StatusCode}: {rawBody}");
+        }
+
+        if (body?.RequiresRelogin == true)
+        {
+            ClearSession();
+        }
+
+        return body ?? new ChangePasswordResponse { Success = true, RequiresRelogin = true };
     }
 
-    public async Task<List<GameEntry>> GetGamesAsync(CancellationToken ct = default)
+    public async Task LogoutAsync(CancellationToken ct = default)
     {
-        return await _httpClient.GetFromJsonAsync<List<GameEntry>>("api/admin/games", ct) ?? new();
+        try
+        {
+            await _httpClient.PostAsync("api/admin/logout", null, ct);
+        }
+        finally
+        {
+            ClearSession();
+        }
     }
 
-    public async Task<List<StorageLocation>> GetStorageLocationsAsync(CancellationToken ct = default)
+    // Games & Categories
+    public async Task<List<GameEntry>> GetGamesAsync(CancellationToken ct = default) =>
+        await _httpClient.GetFromJsonAsync<List<GameEntry>>("api/admin/games", ct) ?? new();
+
+    public async Task<List<StorageLocation>> GetStorageLocationsAsync(CancellationToken ct = default) =>
+        await _httpClient.GetFromJsonAsync<List<StorageLocation>>("api/admin/scanner/storage-locations", ct) ?? new();
+
+    public async Task<StorageLocation> SaveStorageLocationAsync(UpsertStorageLocationRequest request, CancellationToken ct = default)
     {
-        return await _httpClient.GetFromJsonAsync<List<StorageLocation>>("api/admin/games/storage-locations", ct) ?? new();
+        HttpResponseMessage resp = await _httpClient.PostAsJsonAsync("api/admin/scanner/storage-locations", request, ct);
+        await EnsureSuccessAsync(resp);
+        return (await resp.Content.ReadFromJsonAsync<StorageLocation>(ct))!;
+    }
+
+    public async Task DeleteStorageLocationAsync(string id, CancellationToken ct = default)
+    {
+        HttpResponseMessage resp = await _httpClient.DeleteAsync($"api/admin/scanner/storage-locations/{Uri.EscapeDataString(id)}", ct);
+        await EnsureSuccessAsync(resp);
+    }
+
+    public async Task<List<CategoryEntry>> GetCategoriesAsync(CancellationToken ct = default) =>
+        await _httpClient.GetFromJsonAsync<List<CategoryEntry>>("api/admin/categories", ct) ?? new();
+
+    public async Task<CategoryEntry> CreateCategoryAsync(UpsertCategoryRequest request, CancellationToken ct = default)
+    {
+        HttpResponseMessage resp = await _httpClient.PostAsJsonAsync("api/admin/categories", request, ct);
+        await EnsureSuccessAsync(resp);
+        return (await resp.Content.ReadFromJsonAsync<CategoryEntry>(ct))!;
+    }
+
+    public async Task<CategoryEntry> UpdateCategoryAsync(string id, UpsertCategoryRequest request, CancellationToken ct = default)
+    {
+        HttpResponseMessage resp = await _httpClient.PutAsJsonAsync($"api/admin/categories/{Uri.EscapeDataString(id)}", request, ct);
+        await EnsureSuccessAsync(resp);
+        return (await resp.Content.ReadFromJsonAsync<CategoryEntry>(ct))!;
+    }
+
+    public async Task DeleteCategorySafelyAsync(string id, CancellationToken ct = default)
+    {
+        HttpResponseMessage resp = await _httpClient.DeleteAsync($"api/admin/categories/{Uri.EscapeDataString(id)}", ct);
+        await EnsureSuccessAsync(resp);
     }
 
     public async Task<GameEntry> CreateGameAsync(UpsertGameRequest request, CancellationToken ct = default)
@@ -129,16 +253,143 @@ public sealed class AdminApiClient : IDisposable
         return json.GetProperty("coverImagePath").GetString() ?? string.Empty;
     }
 
-    public async Task<List<AdminAuditLog>> GetLogsAsync(CancellationToken ct = default)
+    // Automatic Game Detection & Cover Art Manager (Part 11)
+    public async Task<GameScanJobSnapshot> StartGameScanAsync(StartGameScanRequest request, CancellationToken ct = default)
     {
-        return await _httpClient.GetFromJsonAsync<List<AdminAuditLog>>("api/admin/system/logs?limit=200", ct) ?? new();
+        HttpResponseMessage resp = await _httpClient.PostAsJsonAsync("api/admin/scanner/scan", request, ct);
+        await EnsureSuccessAsync(resp);
+        return (await resp.Content.ReadFromJsonAsync<GameScanJobSnapshot>(ct))!;
     }
+
+    public async Task<GameScanJobSnapshot> GetScanStatusAsync(string jobId, CancellationToken ct = default)
+    {
+        HttpResponseMessage resp = await _httpClient.GetAsync($"api/admin/scanner/scan/{Uri.EscapeDataString(jobId)}", ct);
+        await EnsureSuccessAsync(resp);
+        return (await resp.Content.ReadFromJsonAsync<GameScanJobSnapshot>(ct))!;
+    }
+
+    public async Task CancelGameScanAsync(string jobId, CancellationToken ct = default)
+    {
+        HttpResponseMessage resp = await _httpClient.PostAsync($"api/admin/scanner/scan/{Uri.EscapeDataString(jobId)}/cancel", null, ct);
+        await EnsureSuccessAsync(resp);
+    }
+
+    public async Task<CoverSearchResponse> SearchCoverArtAsync(CoverSearchRequest request, CancellationToken ct = default)
+    {
+        HttpResponseMessage resp = await _httpClient.PostAsJsonAsync("api/admin/scanner/artwork/search", request, ct);
+        await EnsureSuccessAsync(resp);
+        return (await resp.Content.ReadFromJsonAsync<CoverSearchResponse>(ct))!;
+    }
+
+    public async Task<string> UploadScannerArtworkAsync(string localFilePath, CancellationToken ct = default)
+    {
+        await using FileStream stream = File.OpenRead(localFilePath);
+        using var form = new MultipartFormDataContent();
+        using var fileContent = new StreamContent(stream);
+        form.Add(fileContent, "file", Path.GetFileName(localFilePath));
+
+        HttpResponseMessage resp = await _httpClient.PostAsync("api/admin/scanner/artwork/upload", form, ct);
+        await EnsureSuccessAsync(resp);
+        var json = await resp.Content.ReadFromJsonAsync<JsonElement>(ct);
+        return json.GetProperty("coverImagePath").GetString() ?? string.Empty;
+    }
+
+    public async Task<ImportDetectedGamesResponse> ImportDetectedGamesAsync(ImportDetectedGamesRequest request, CancellationToken ct = default)
+    {
+        HttpResponseMessage resp = await _httpClient.PostAsJsonAsync("api/admin/scanner/import", request, ct);
+        await EnsureSuccessAsync(resp);
+        return (await resp.Content.ReadFromJsonAsync<ImportDetectedGamesResponse>(ct))!;
+    }
+
+    // Appearance & Themes
+    public async Task<AdminThemesSnapshotResponse> GetThemesSnapshotAsync(CancellationToken ct = default) =>
+        await _httpClient.GetFromJsonAsync<AdminThemesSnapshotResponse>("api/admin/themes", ct) ?? new();
+
+    public async Task<ThemeConfig> CreateThemeAsync(ThemeConfig theme, CancellationToken ct = default)
+    {
+        HttpResponseMessage resp = await _httpClient.PostAsJsonAsync("api/admin/themes", theme, ct);
+        await EnsureSuccessAsync(resp);
+        return (await resp.Content.ReadFromJsonAsync<ThemeConfig>(ct))!;
+    }
+
+    public async Task<ThemeConfig> SaveThemeDraftAsync(string id, ThemeConfig theme, CancellationToken ct = default)
+    {
+        HttpResponseMessage resp = await _httpClient.PutAsJsonAsync($"api/admin/themes/{Uri.EscapeDataString(id)}", theme, ct);
+        await EnsureSuccessAsync(resp);
+        return (await resp.Content.ReadFromJsonAsync<ThemeConfig>(ct))!;
+    }
+
+    public async Task<ThemeConfig> DuplicateThemeAsync(string id, string newName, CancellationToken ct = default)
+    {
+        HttpResponseMessage resp = await _httpClient.PostAsJsonAsync($"api/admin/themes/{Uri.EscapeDataString(id)}/duplicate", new DuplicateThemeRequest { NewName = newName }, ct);
+        await EnsureSuccessAsync(resp);
+        return (await resp.Content.ReadFromJsonAsync<ThemeConfig>(ct))!;
+    }
+
+    public async Task<ThemeConfig> RenameThemeAsync(string id, string newName, CancellationToken ct = default)
+    {
+        HttpResponseMessage resp = await _httpClient.PatchAsJsonAsync($"api/admin/themes/{Uri.EscapeDataString(id)}/rename", new RenameThemeRequest { NewName = newName }, ct);
+        await EnsureSuccessAsync(resp);
+        return (await resp.Content.ReadFromJsonAsync<ThemeConfig>(ct))!;
+    }
+
+    public async Task SetDefaultThemeAsync(string id, CancellationToken ct = default)
+    {
+        HttpResponseMessage resp = await _httpClient.PostAsync($"api/admin/themes/{Uri.EscapeDataString(id)}/set-default", null, ct);
+        await EnsureSuccessAsync(resp);
+    }
+
+    public async Task DeleteThemeAsync(string id, CancellationToken ct = default)
+    {
+        HttpResponseMessage resp = await _httpClient.DeleteAsync($"api/admin/themes/{Uri.EscapeDataString(id)}", ct);
+        await EnsureSuccessAsync(resp);
+    }
+
+    public async Task<PublishedThemePayload> PublishThemeAsync(string id, CancellationToken ct = default)
+    {
+        HttpResponseMessage resp = await _httpClient.PostAsync($"api/admin/themes/{Uri.EscapeDataString(id)}/publish", null, ct);
+        await EnsureSuccessAsync(resp);
+        return (await resp.Content.ReadFromJsonAsync<PublishedThemePayload>(ct))!;
+    }
+
+    public async Task<PublishedThemePayload> RestoreDefaultThemeAsync(CancellationToken ct = default)
+    {
+        HttpResponseMessage resp = await _httpClient.PostAsync("api/admin/themes/restore-default", null, ct);
+        await EnsureSuccessAsync(resp);
+        return (await resp.Content.ReadFromJsonAsync<PublishedThemePayload>(ct))!;
+    }
+
+    public async Task<ThemeAssetMetadata> UploadThemeAssetAsync(string localFilePath, CancellationToken ct = default)
+    {
+        await using FileStream stream = File.OpenRead(localFilePath);
+        using var form = new MultipartFormDataContent();
+        using var fileContent = new StreamContent(stream);
+        form.Add(fileContent, "file", Path.GetFileName(localFilePath));
+
+        HttpResponseMessage resp = await _httpClient.PostAsync("api/admin/themes/assets", form, ct);
+        await EnsureSuccessAsync(resp);
+        return (await resp.Content.ReadFromJsonAsync<ThemeAssetMetadata>(ct))!;
+    }
+
+    // Logs, Backup & Recovery
+    public async Task<List<AdminAuditLog>> GetLogsAsync(CancellationToken ct = default) =>
+        await _httpClient.GetFromJsonAsync<List<AdminAuditLog>>("api/admin/system/logs?limit=200", ct) ?? new();
 
     public async Task<BackupResult> TriggerBackupAsync(CancellationToken ct = default)
     {
         HttpResponseMessage resp = await _httpClient.PostAsync("api/admin/system/backup", null, ct);
         await EnsureSuccessAsync(resp);
         return (await resp.Content.ReadFromJsonAsync<BackupResult>(ct))!;
+    }
+
+    public async Task<RecoveryCodeResponse> IssueRecoveryCodeAsync(string stationName, CancellationToken ct = default)
+    {
+        HttpResponseMessage resp = await _httpClient.PostAsync(
+            $"api/admin/system/recovery-code?stationName={Uri.EscapeDataString(stationName)}",
+            null,
+            ct);
+        await EnsureSuccessAsync(resp);
+        return (await resp.Content.ReadFromJsonAsync<RecoveryCodeResponse>(ct))!;
     }
 
     private void SetBearerToken(string token)

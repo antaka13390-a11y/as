@@ -1,4 +1,5 @@
 using System.Windows;
+using CyberHub.AdminPanel.Localization;
 using CyberHub.AdminPanel.Services;
 using CyberHub.Shared.Models;
 
@@ -7,12 +8,15 @@ namespace CyberHub.AdminPanel.Views;
 public partial class LoginWindow : Window
 {
     private readonly AdminApiClient _apiClient;
+    private readonly AdminLocalizationService _loc;
     private bool _needsInitialSetup;
 
-    public LoginWindow(AdminApiClient apiClient)
+    public LoginWindow(AdminApiClient apiClient, AdminLocalizationService loc)
     {
         InitializeComponent();
         _apiClient = apiClient;
+        _loc = loc;
+        DataContext = _loc;
         Loaded += LoginWindow_Loaded;
     }
 
@@ -22,18 +26,21 @@ public partial class LoginWindow : Window
         {
             AdminStatusResponse status = await _apiClient.GetStatusAsync();
             _needsInitialSetup = !status.IsConfigured;
-            SubtitleText.Text = _needsInitialSetup
-                ? $"First-run setup on {status.DetectedWorkstation} ({status.DetectedClientIp}). Choose an admin password (min 10 chars)."
-                : $"Authorized workstation: {status.DetectedWorkstation} ({status.DetectedClientIp}).";
-            SubmitButton.Content = _needsInitialSetup ? "Claim Admin Password" : "Sign In";
+            SubtitleText.Text = $"{status.DetectedWorkstation} ({status.DetectedClientIp})";
+            SubmitButton.Content = _needsInitialSetup ? _loc["Admin.ClaimPassword"] : _loc["Admin.SignIn"];
         }
         catch (Exception ex)
         {
-            SubtitleText.Text = "Connection or authorization blocked.";
             ErrorText.Text = ex.Message;
             ErrorText.Visibility = Visibility.Visible;
             SubmitButton.IsEnabled = false;
         }
+    }
+
+    private void ToggleLang_Click(object sender, RoutedEventArgs e)
+    {
+        _loc.ToggleLanguage();
+        SubmitButton.Content = _needsInitialSetup ? _loc["Admin.ClaimPassword"] : _loc["Admin.SignIn"];
     }
 
     private async void SubmitButton_Click(object sender, RoutedEventArgs e)

@@ -73,6 +73,80 @@ public sealed class SecurityAndRepositoryTests : IDisposable
     }
 
     [Fact]
+    public async Task Categories_CreateAndDeleteSafelyWithoutDeletingGames()
+    {
+        await _repository.InitializeAsync();
+
+        List<CategoryEntry> seeded = await _repository.GetCategoriesAsync();
+        Assert.Contains(seeded, c => c.NameEn == "All Games" && c.IsSystem);
+        Assert.Contains(seeded, c => c.NameEn == "Online Games" && c.IsSystem);
+        Assert.Contains(seeded, c => c.NameEn == "Offline Games" && c.IsSystem);
+
+        var custom = new CategoryEntry
+        {
+            Id = "cat-esports",
+            Slug = "esports-arena",
+            NameEn = "Esports Arena",
+            NameAr = "ساحة الرياضات الإلكترونية",
+            IconKey = "trophy",
+            DisplayOrder = 12
+        };
+        await _repository.UpsertCategoryAsync(custom, isNew: true);
+
+        var game = new GameEntry
+        {
+            Id = Guid.NewGuid(),
+            Name = "Arena Clash",
+            Category = "Esports Arena",
+            CategoryIds = new List<string> { "cat-esports", "cat-action" },
+            NetworkMode = NetworkMode.Online,
+            ExecutablePath = @"\\CCBOOT-SRV\Games\Arena\arena.exe",
+            LaunchType = LaunchType.DirectExecutable
+        };
+        await _repository.UpsertGameAsync(game, isNew: true);
+
+        // System categories cannot be deleted
+        (bool systemDeleted, _) = await _repository.DeleteCategorySafelyAsync("cat-all");
+        Assert.False(systemDeleted);
+
+        // Deleting custom category removes the link only and preserves the game record
+        (bool customDeleted, _) = await _repository.DeleteCategorySafelyAsync("cat-esports");
+        Assert.True(customDeleted);
+
+        GameEntry? persistedGame = await _repository.GetGameByIdAsync(game.Id);
+        Assert.NotNull(persistedGame);
+        Assert.DoesNotContain("cat-esports", persistedGame!.CategoryIds);
+        Assert.Contains("cat-action", persistedGame.CategoryIds);
+    }
+
+    [Fact]
+    public async Task Games_SupportMultipleCategoriesAndOnlineOfflineClassification()
+    {
+        await _repository.InitializeAsync();
+
+        var offlineRpg = new GameEntry
+        {
+            Id = Guid.NewGuid(),
+            Name = "Shadow Keep",
+            Category = "Action",
+            CategoryIds = new List<string> { "cat-action", "cat-adventure" },
+            NetworkMode = NetworkMode.Offline,
+            ExecutablePath = @"\\CCBOOT-SRV\Games\ShadowKeep\shadow.exe",
+            LaunchType = LaunchType.DirectExecutable,
+            IsVisible = true
+        };
+
+        await _repository.UpsertGameAsync(offlineRpg, isNew: true);
+        GameEntry? loaded = await _repository.GetGameByIdAsync(offlineRpg.Id);
+
+        Assert.NotNull(loaded);
+        Assert.Equal(NetworkMode.Offline, loaded!.NetworkMode);
+        Assert.Equal(2, loaded.CategoryIds.Count);
+        Assert.Contains("cat-action", loaded.CategoryIds);
+        Assert.Contains("cat-adventure", loaded.CategoryIds);
+    }
+
+    [Fact]
     public async Task DeleteGameRecordOnly_NeverDeletesTargetGameFileOnDisk()
     {
         await _repository.InitializeAsync();
@@ -85,6 +159,8 @@ public sealed class SecurityAndRepositoryTests : IDisposable
             Id = Guid.NewGuid(),
             Name = "Test Title",
             Category = "Action",
+            CategoryIds = new List<string> { "cat-action" },
+            NetworkMode = NetworkMode.Offline,
             ExecutablePath = simulatedGameExe,
             LaunchType = LaunchType.DirectExecutable,
             IsVisible = true

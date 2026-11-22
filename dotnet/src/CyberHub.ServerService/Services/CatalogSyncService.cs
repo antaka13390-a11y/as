@@ -12,6 +12,7 @@ public sealed class CatalogSyncService
     private readonly SqliteGameRepository _repository;
     private readonly ServerOptions _options;
     private readonly ILogger<CatalogSyncService> _logger;
+    private readonly SemaphoreSlim _publishLock = new(1, 1);
 
     public CatalogSyncService(
         SqliteGameRepository repository,
@@ -27,7 +28,9 @@ public sealed class CatalogSyncService
     {
         (long version, _) = await _repository.GetCatalogMetadataAsync(ct);
         List<StorageLocation> locations = await _repository.GetStorageLocationsAsync(ct);
+        List<CategoryEntry> categories = await _repository.GetCategoriesAsync(ct);
         List<GameEntry> visibleGames = await _repository.GetGamesAsync(includeHidden: false, ct);
+        PublishedThemePayload publishedTheme = await _repository.GetPublishedThemePayloadAsync(ct);
 
         return new PublishedCatalogSnapshot
         {
@@ -35,29 +38,50 @@ public sealed class CatalogSyncService
             PublishedAtUtc = DateTimeOffset.UtcNow,
             ServerHostname = Environment.MachineName,
             StorageLocations = locations,
-            Games = visibleGames
+            Categories = categories,
+            Games = visibleGames,
+            PublishedTheme = publishedTheme
         };
+    }
+
+    public async Task<PublishedThemePayload> BuildReadOnlyThemeAsync(CancellationToken ct = default)
+    {
+        return await _repository.GetPublishedThemePayloadAsync(ct);
     }
 
     public async Task PublishSnapshotToShareAsync(CancellationToken ct = default)
     {
+        await _publishLock.WaitAsync(ct);
         try
         {
             PublishedCatalogSnapshot snapshot = await BuildReadOnlyCatalogAsync(ct);
-            string? dir = Path.GetDirectoryName(_options.PublishedCatalogPath);
-            if (!string.IsNullOrWhiteSpace(dir))
+            await WriteAtomicJsonAsync(_options.PublishedCatalogPath, snapshot, ct);
+            if (snapshot.PublishedTheme is not null)
             {
-                Directory.CreateDirectory(dir);
+                await WriteAtomicJsonAsync(_options.PublishedThemePath, snapshot.PublishedTheme, ct);
             }
-
-            string tempFile = _options.PublishedCatalogPath + ".tmp";
-            string json = JsonSerializer.Serialize(snapshot, JsonOptions);
-            await File.WriteAllTextAsync(tempFile, json, ct);
-            File.Move(tempFile, _options.PublishedCatalogPath, overwrite: true);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to publish read-only JSON catalog snapshot to {Path}", _options.PublishedCatalogPath);
         }
+        finally
+        {
+            _publishLock.Release();
+        }
+    }
+
+    private static async Task WriteAtomicJsonAsync<T>(string targetPath, T value, CancellationToken ct)
+    {
+        string? dir = Path.GetDirectoryName(targetPath);
+        if (!string.IsNullOrWhiteSpace(dir))
+        {
+            Directory.CreateDirectory(dir);
+        }
+
+        string tempFile = $"{targetPath}.{Guid.NewGuid():N}.tmp";
+        string json = JsonSerializer.Serialize(value, JsonOptions);
+        await File.WriteAllTextAsync(tempFile, json, ct);
+        File.Move(tempFile, targetPath, overwrite: true);
     }
 }

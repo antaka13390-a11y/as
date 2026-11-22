@@ -10,14 +10,16 @@ public sealed class TokenPayload
     public string Workstation { get; set; } = string.Empty;
     public string SourceIp { get; set; } = string.Empty;
     public long ExpiresUnixSeconds { get; set; }
+    public long TokenEpoch { get; set; }
     public string Nonce { get; set; } = string.Empty;
 }
 
 public sealed class TokenService
 {
     private readonly byte[] _signingKey;
+    private long _minimumValidEpoch;
 
-    public TokenService(string? configuredSecret)
+    public TokenService(string? configuredSecret, long initialEpoch = 1)
     {
         if (!string.IsNullOrWhiteSpace(configuredSecret) && configuredSecret.Length >= 32)
         {
@@ -27,6 +29,20 @@ public sealed class TokenService
         {
             _signingKey = RandomNumberGenerator.GetBytes(32);
         }
+
+        _minimumValidEpoch = Math.Max(1, initialEpoch);
+    }
+
+    public long CurrentEpoch => Volatile.Read(ref _minimumValidEpoch);
+
+    public void SetMinimumValidEpoch(long epoch)
+    {
+        Volatile.Write(ref _minimumValidEpoch, Math.Max(1, epoch));
+    }
+
+    public long RevokeAllTokens()
+    {
+        return Interlocked.Increment(ref _minimumValidEpoch);
     }
 
     public string IssueToken(string subject, string workstation, string sourceIp, TimeSpan lifetime)
@@ -37,6 +53,7 @@ public sealed class TokenService
             Workstation = workstation,
             SourceIp = sourceIp,
             ExpiresUnixSeconds = DateTimeOffset.UtcNow.Add(lifetime).ToUnixTimeSeconds(),
+            TokenEpoch = CurrentEpoch,
             Nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(8))
         };
 
@@ -83,6 +100,11 @@ public sealed class TokenService
             string json = Encoding.UTF8.GetString(Base64UrlDecode(parts[0]));
             TokenPayload? parsed = JsonSerializer.Deserialize<TokenPayload>(json);
             if (parsed is null)
+            {
+                return false;
+            }
+
+            if (parsed.TokenEpoch < CurrentEpoch)
             {
                 return false;
             }

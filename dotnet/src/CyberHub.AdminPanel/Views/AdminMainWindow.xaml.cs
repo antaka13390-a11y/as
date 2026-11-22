@@ -1,4 +1,5 @@
 using System.Windows;
+using CyberHub.AdminPanel.Localization;
 using CyberHub.AdminPanel.Services;
 using CyberHub.AdminPanel.ViewModels;
 using Microsoft.Win32;
@@ -10,15 +11,30 @@ public partial class AdminMainWindow : Window
     private readonly AdminApiClient _apiClient;
     private readonly AdminViewModel _viewModel;
 
-    public AdminMainWindow(AdminApiClient apiClient)
+    public event EventHandler? ReloginRequested;
+
+    public AdminMainWindow(AdminApiClient apiClient, AdminLocalizationService loc)
     {
         InitializeComponent();
         _apiClient = apiClient;
-        _viewModel = new AdminViewModel(apiClient);
-        DataContext = _viewModel;
+        _viewModel = new AdminViewModel(apiClient, loc);
+        _viewModel.ReloginRequested += (_, _) =>
+        {
+            Dispatcher.Invoke(() =>
+            {
+                CurrentPasswordBox.Clear();
+                NewPasswordBox.Clear();
+                ConfirmPasswordBox.Clear();
+                ReloginRequested?.Invoke(this, EventArgs.Empty);
+            });
+        };
 
+        DataContext = _viewModel;
         Loaded += async (_, _) => await _viewModel.RefreshAllAsync();
     }
+
+    private void ToggleLang_Click(object sender, RoutedEventArgs e) =>
+        _viewModel.Loc.ToggleLanguage();
 
     private async void Refresh_Click(object sender, RoutedEventArgs e) =>
         await _viewModel.RefreshAllAsync();
@@ -48,6 +64,28 @@ public partial class AdminMainWindow : Window
         }
     }
 
+    private void NewCategory_Click(object sender, RoutedEventArgs e) =>
+        _viewModel.BeginNewCategory();
+
+    private async void SaveCategory_Click(object sender, RoutedEventArgs e) =>
+        await _viewModel.SaveCategoryAsync();
+
+    private async void DeleteCategory_Click(object sender, RoutedEventArgs e)
+    {
+        if (_viewModel.SelectedCategory is null) return;
+
+        MessageBoxResult confirm = MessageBox.Show(
+            $"Delete category '{_viewModel.SelectedCategory.NameEn}'? Games assigned to this category will NOT be deleted.",
+            "Confirm Safe Category Removal",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+
+        if (confirm == MessageBoxResult.Yes)
+        {
+            await _viewModel.DeleteSelectedCategorySafelyAsync();
+        }
+    }
+
     private async void UploadCover_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog
@@ -64,9 +102,22 @@ public partial class AdminMainWindow : Window
     private async void BackupDb_Click(object sender, RoutedEventArgs e) =>
         await _viewModel.RunBackupAsync();
 
-    protected override void OnClosed(EventArgs e)
+    private async void IssueRecovery_Click(object sender, RoutedEventArgs e) =>
+        await _viewModel.GenerateRecoveryCodeAsync();
+
+    private void NewPasswordBox_PasswordChanged(object sender, RoutedEventArgs e) =>
+        _viewModel.UpdatePasswordStrengthIndicator(NewPasswordBox.Password);
+
+    private async void ChangePassword_Click(object sender, RoutedEventArgs e)
     {
-        _apiClient.Dispose();
-        base.OnClosed(e);
+        await _viewModel.ChangePasswordAsync(
+            CurrentPasswordBox.Password,
+            NewPasswordBox.Password,
+            ConfirmPasswordBox.Password);
+    }
+
+    private async void SecureLogout_Click(object sender, RoutedEventArgs e)
+    {
+        await _viewModel.SecureLogoutAsync();
     }
 }

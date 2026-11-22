@@ -1,0 +1,301 @@
+name: Build and Verify Windows Release Installers
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      app_version:
+        description: 'Release version (e.g. 1.0.0)'
+        required: false
+        default: '1.0.0'
+      create_release:
+        description: 'Publish GitHub Release with direct EXE download links'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-test-package-windows:
+    name: Build, Test & Package Windows EXE Installers
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Resolve Release version
+        id: meta
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $ver = $env:GITHUB_REF.Replace('refs/tags/v', '')
+          } elseif (-not [string]::IsNullOrWhiteSpace('${{ github.event.inputs.app_version }}')) {
+            $ver = '${{ github.event.inputs.app_version }}'
+          } else {
+            $ver = '1.0.0'
+          }
+          "APP_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Building CYBER HUB Release v$ver"
+
+      - name: Restore & Build .NET 8 Solution (Release)
+        shell: pwsh
+        run: |
+          dotnet restore dotnet/CyberHub.sln
+          dotnet build dotnet/CyberHub.sln -c Release --no-restore
+
+      - name: Run Automated Unit Tests
+        shell: pwsh
+        run: |
+          dotnet test dotnet/CyberHub.sln -c Release --no-build --verbosity normal `
+            --logger "trx;LogFileName=cyberhub-tests.trx" `
+            --results-directory artifacts/test-results
+
+      - name: Publish Self-Contained Release Binaries (win-x64, .NET 8 Bundled)
+        shell: pwsh
+        run: |
+          dotnet publish dotnet/src/CyberHub.ServerService/CyberHub.ServerService.csproj `
+            -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false `
+            -p:Version=$env:APP_VERSION -o dotnet/artifacts/publish/ServerService
+
+          dotnet publish dotnet/src/CyberHub.AdminPanel/CyberHub.AdminPanel.csproj `
+            -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false `
+            -p:Version=$env:APP_VERSION -o dotnet/artifacts/publish/AdminPanel
+
+          dotnet publish dotnet/src/CyberHub.ClientLauncher/CyberHub.ClientLauncher.csproj `
+            -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false `
+            -p:Version=$env:APP_VERSION -o dotnet/artifacts/publish/ClientLauncher
+
+      - name: Enforce Strict Role Isolation on Published Artifacts
+        shell: pwsh
+        run: |
+          if (Test-Path "dotnet/artifacts/publish/ClientLauncher/CyberHub.AdminPanel.exe") {
+            throw "SECURITY VIOLATION: AdminPanel binary found inside ClientLauncher publish output!"
+          }
+          if (Test-Path "dotnet/artifacts/publish/ClientLauncher/CyberHub.ServerService.exe") {
+            throw "SECURITY VIOLATION: ServerService binary found inside ClientLauncher publish output!"
+          }
+          if (-not (Test-Path "dotnet/artifacts/publish/ServerService/CyberHub.ServerService.exe")) {
+            throw "Missing CyberHub.ServerService.exe"
+          }
+          if (-not (Test-Path "dotnet/artifacts/publish/AdminPanel/CyberHub.AdminPanel.exe")) {
+            throw "Missing CyberHub.AdminPanel.exe"
+          }
+          if (-not (Test-Path "dotnet/artifacts/publish/ClientLauncher/CyberHub.ClientLauncher.exe")) {
+            throw "Missing CyberHub.ClientLauncher.exe"
+          }
+          Write-Host "Strict artifact role isolation verified."
+
+      - name: Locate or Install Inno Setup 6
+        shell: pwsh
+        run: |
+          function Find-Iscc {
+            $candidates = @(
+              "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+              "C:\Program Files\Inno Setup 6\ISCC.exe"
+            )
+            foreach ($p in $candidates) {
+              if (Test-Path $p) { return $p }
+            }
+            $cmd = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+            if ($cmd) { return $cmd.Source }
+            return $null
+          }
+
+          $iscc = Find-Iscc
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            $iscc = Find-Iscc
+          }
+          if (-not $iscc) {
+            throw "Inno Setup compiler (ISCC.exe) could not be located."
+          }
+          "ISCC_PATH=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Using Inno Setup compiler: $iscc"
+
+      - name: Build Ready-to-Install Windows EXE Installers
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts/installers | Out-Null
+          & "$env:ISCC_PATH" "/DAppVersion=$env:APP_VERSION" "dotnet/installer/CyberHub-Server-Setup.iss"
+          & "$env:ISCC_PATH" "/DAppVersion=$env:APP_VERSION" "dotnet/installer/CyberHub-AdminPanel-Setup.iss"
+          & "$env:ISCC_PATH" "/DAppVersion=$env:APP_VERSION" "dotnet/installer/CyberHub-ClientLauncher-Setup.iss"
+          & "$env:ISCC_PATH" "/DAppVersion=$env:APP_VERSION" "dotnet/installer/CyberHub-Setup.iss"
+
+          Get-ChildItem artifacts/installers/*.exe | Format-Table Name, Length
+
+      - name: End-to-End Windows Installer & Executable Smoke Verification
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # Ensure clean baseline in case of self-hosted runner reuse
+          Remove-Item -Path "C:\ProgramData\CyberHub" -Recurse -Force -ErrorAction SilentlyContinue
+
+          Write-Host "=== 1. Verifying CyberHub-Server-Setup.exe ==="
+          $srvProc = Start-Process -FilePath "artifacts/installers/CyberHub-Server-Setup.exe" `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/ADMINIP=127.0.0.1", "/ADMINHOST=$env:COMPUTERNAME", "/SERVERDNS=localhost" `
+            -Wait -PassThru
+          if ($srvProc.ExitCode -ne 0) { throw "Server installer exited with $($srvProc.ExitCode)" }
+
+          $svc = Get-Service -Name "CyberHubServerService" -ErrorAction Stop
+          if ($svc.Status -ne "Running") { throw "CyberHubServerService failed to reach Running state: $($svc.Status)" }
+
+          $catalog = $null
+          for ($attempt = 0; $attempt -lt 20; $attempt++) {
+            try {
+              $catalog = Invoke-RestMethod -Uri "https://127.0.0.1:8443/api/catalog" -SkipCertificateCheck
+              break
+            } catch {
+              Start-Sleep -Seconds 1
+            }
+          }
+          if (-not $catalog) { throw "Public catalog endpoint did not become reachable over HTTPS within 20s." }
+
+          $theme = Invoke-RestMethod -Uri "https://127.0.0.1:8443/api/catalog/theme" -SkipCertificateCheck
+          if (-not $theme) { throw "Public theme endpoint returned empty payload." }
+
+          $statusBefore = Invoke-RestMethod -Uri "https://127.0.0.1:8443/api/admin/status" `
+            -Headers @{ "X-CyberHub-Workstation" = $env:COMPUTERNAME } -SkipCertificateCheck
+          if ($statusBefore.isConfigured -ne $false) {
+            throw "Expected fresh database to report isConfigured=false before initial password setup."
+          }
+
+          try {
+            Invoke-WebRequest -Uri "https://127.0.0.1:8443/api/admin/themes" -SkipCertificateCheck | Out-Null
+            throw "Expected HTTP 401 when calling protected admin route without bearer token!"
+          } catch {
+            if ($null -eq $_.Exception.Response -or [int]$_.Exception.Response.StatusCode -ne 401) { throw }
+          }
+
+          $setupResp = Invoke-RestMethod -Uri "https://127.0.0.1:8443/api/admin/setup" `
+            -Method Post -ContentType "application/json" `
+            -Headers @{ "X-CyberHub-Workstation" = $env:COMPUTERNAME } `
+            -Body (@{ password = "SmokeTestPassword!2026" } | ConvertTo-Json) -SkipCertificateCheck
+          if ([string]::IsNullOrWhiteSpace($setupResp.accessToken)) { throw "Initial admin password setup failed to issue token." }
+
+          $adminThemes = Invoke-RestMethod -Uri "https://127.0.0.1:8443/api/admin/themes" `
+            -Headers @{ "Authorization" = "Bearer $($setupResp.accessToken)"; "X-CyberHub-Workstation" = $env:COMPUTERNAME } `
+            -SkipCertificateCheck
+          if (-not $adminThemes -or $adminThemes.Count -lt 1) { throw "Authenticated admin theme endpoint failed." }
+
+          $loginResp = Invoke-RestMethod -Uri "https://127.0.0.1:8443/api/admin/login" `
+            -Method Post -ContentType "application/json" `
+            -Headers @{ "X-CyberHub-Workstation" = $env:COMPUTERNAME } `
+            -Body (@{ password = "SmokeTestPassword!2026" } | ConvertTo-Json) -SkipCertificateCheck
+          if ([string]::IsNullOrWhiteSpace($loginResp.accessToken)) { throw "Admin login failed with newly claimed password." }
+
+          try {
+            Invoke-WebRequest -Uri "https://127.0.0.1:8443/api/admin/setup" `
+              -Method Post -ContentType "application/json" `
+              -Headers @{ "X-CyberHub-Workstation" = $env:COMPUTERNAME } `
+              -Body (@{ password = "AnotherPassword!2026" } | ConvertTo-Json) -SkipCertificateCheck | Out-Null
+            throw "Expected HTTP 409 when calling setup a second time!"
+          } catch {
+            if ($null -eq $_.Exception.Response -or [int]$_.Exception.Response.StatusCode -ne 409) { throw }
+          }
+
+          if (-not (Get-SmbShare -Name "CyberHubReadOnly$" -ErrorAction SilentlyContinue)) {
+            throw "SMB share CyberHubReadOnly$ was not created."
+          }
+
+          $srvUninst = Start-Process -FilePath "C:\CyberHub\ServerService\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
+          if ($srvUninst.ExitCode -ne 0) { throw "Server uninstaller failed: $($srvUninst.ExitCode)" }
+          if (Get-Service -Name "CyberHubServerService" -ErrorAction SilentlyContinue) {
+            throw "CyberHubServerService still exists after uninstall."
+          }
+          Remove-Item -Path "C:\ProgramData\CyberHub" -Recurse -Force -ErrorAction SilentlyContinue
+
+          Write-Host "=== 2. Verifying CyberHub-AdminPanel-Setup.exe ==="
+          $admProc = Start-Process -FilePath "artifacts/installers/CyberHub-AdminPanel-Setup.exe" `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SERVERURL=https://127.0.0.1:8443" `
+            -Wait -PassThru
+          if ($admProc.ExitCode -ne 0) { throw "Admin installer failed: $($admProc.ExitCode)" }
+
+          $adminExe = "C:\Program Files\CyberHub\AdminPanel\CyberHub.AdminPanel.exe"
+          if (-not (Test-Path $adminExe)) { throw "Missing $adminExe after install" }
+          if (-not (Test-Path "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\CYBER HUB Admin\CYBER HUB ADMIN.lnk") -and
+              -not (Test-Path "C:\Users\Public\Desktop\CYBER HUB ADMIN.lnk")) {
+            throw "Missing CYBER HUB ADMIN shortcut"
+          }
+
+          $admApp = Start-Process -FilePath $adminExe -WorkingDirectory (Split-Path $adminExe) -PassThru
+          Start-Sleep -Seconds 4
+          if ($admApp.HasExited) { throw "CyberHub.AdminPanel.exe exited unexpectedly with code $($admApp.ExitCode)" }
+          Stop-Process -Id $admApp.Id -Force
+
+          Start-Process -FilePath "C:\Program Files\CyberHub\AdminPanel\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait | Out-Null
+
+          Write-Host "=== 3. Verifying CyberHub-ClientLauncher-Setup.exe ==="
+          $cliProc = Start-Process -FilePath "artifacts/installers/CyberHub-ClientLauncher-Setup.exe" `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SERVERURL=https://127.0.0.1:8443", "/AUTOSTART=0" `
+            -Wait -PassThru
+          if ($cliProc.ExitCode -ne 0) { throw "Client installer failed: $($cliProc.ExitCode)" }
+
+          $clientExe = "C:\Program Files\CyberHub\ClientLauncher\CyberHub.ClientLauncher.exe"
+          if (-not (Test-Path $clientExe)) { throw "Missing $clientExe after install" }
+          if (Test-Path "C:\Program Files\CyberHub\ClientLauncher\CyberHub.AdminPanel.exe") {
+            throw "SECURITY VIOLATION: AdminPanel installed with ClientLauncher!"
+          }
+
+          $cliApp = Start-Process -FilePath $clientExe -WorkingDirectory (Split-Path $clientExe) -PassThru
+          Start-Sleep -Seconds 4
+          if ($cliApp.HasExited) { throw "CyberHub.ClientLauncher.exe exited unexpectedly with code $($cliApp.ExitCode)" }
+          Stop-Process -Id $cliApp.Id -Force
+
+          Start-Process -FilePath "C:\Program Files\CyberHub\ClientLauncher\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait | Out-Null
+
+          Write-Host "=== 4. Verifying Unified CyberHub-Setup.exe (Client role) ==="
+          $masterProc = Start-Process -FilePath "artifacts/installers/CyberHub-Setup.exe" `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/ROLE=client", "/AUTOSTART=0" `
+            -Wait -PassThru
+          if ($masterProc.ExitCode -ne 0) { throw "Master installer failed: $($masterProc.ExitCode)" }
+          if (-not (Test-Path $clientExe)) { throw "Master installer did not deploy ClientLauncher.exe" }
+          if (Test-Path "C:\Program Files\CyberHub\ClientLauncher\CyberHub.AdminPanel.exe") {
+            throw "SECURITY VIOLATION: Master client install deployed AdminPanel.exe!"
+          }
+          Start-Process -FilePath "C:\Program Files\CyberHub\ClientLauncher\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait | Out-Null
+
+          Write-Host "All Windows installers and executables passed smoke verification!"
+
+      - name: Generate SHA256 Checksums
+        shell: pwsh
+        run: |
+          Get-FileHash artifacts/installers/*.exe -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLowerInvariant())  $(Split-Path $_.Path -Leaf)" } |
+            Set-Content -Path artifacts/installers/SHA256SUMS.txt -Encoding ascii
+
+      - name: Upload Installer & Test Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cyberhub-windows-installers-v${{ env.APP_VERSION }}
+          path: |
+            artifacts/installers/*.exe
+            artifacts/installers/SHA256SUMS.txt
+            artifacts/test-results/**
+          retention-days: 90
+
+      - name: Publish GitHub Release with Download Links
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.create_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.APP_VERSION }}
+          name: CYBER HUB v${{ env.APP_VERSION }} (Windows x64 Installers)
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            artifacts/installers/CyberHub-Setup.exe
+            artifacts/installers/CyberHub-Server-Setup.exe
+            artifacts/installers/CyberHub-AdminPanel-Setup.exe
+            artifacts/installers/CyberHub-ClientLauncher-Setup.exe
+            artifacts/installers/SHA256SUMS.txt

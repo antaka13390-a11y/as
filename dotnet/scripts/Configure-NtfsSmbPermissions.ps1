@@ -15,11 +15,18 @@ param(
 $ErrorActionPreference = "Stop"
 
 Write-Host "Locking down SQLite database & backup directory ($PrivateDataPath)..." -ForegroundColor Cyan
-icacls $PrivateDataPath /inheritance:r
-icacls $PrivateDataPath /grant "NT AUTHORITY\SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F"
-icacls $PrivateDataPath /remove "BUILTIN\Users" "Everyone" "Authenticated Users" 2>$null
+icacls $PrivateDataPath /inheritance:r | Out-Null
+icacls $PrivateDataPath /grant "NT AUTHORITY\SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F" | Out-Null
+$prevPref = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+icacls $PrivateDataPath /remove "BUILTIN\Users" "Everyone" "Authenticated Users" 2>$null | Out-Null
+$ErrorActionPreference = $prevPref
+$LASTEXITCODE = 0
 
 Write-Host "Configuring Read-Only NTFS permissions on PublishedCatalog ($PublishedSharePath)..." -ForegroundColor Cyan
+New-Item -ItemType Directory -Force -Path $PublishedSharePath | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $PublishedSharePath "covers") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $PublishedSharePath "theme-assets") | Out-Null
 icacls $PublishedSharePath /inheritance:r
 icacls $PublishedSharePath /grant "NT AUTHORITY\SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F"
 icacls $PublishedSharePath /grant "${ClientAccount}:(OI)(CI)RX"

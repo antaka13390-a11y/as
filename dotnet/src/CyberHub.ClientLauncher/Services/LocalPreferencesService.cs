@@ -5,7 +5,7 @@ namespace CyberHub.ClientLauncher.Services;
 
 public sealed class PlayerPreferences
 {
-    public HashSet<Guid> FavoriteGameIds { get; set; } = new();
+    public string PreferredLanguage { get; set; } = "ar";
     public List<RecentPlayEntry> RecentlyPlayed { get; set; } = new();
 }
 
@@ -32,17 +32,19 @@ public sealed class LocalPreferencesService
     {
         if (!File.Exists(_prefsPath))
         {
-            return new PlayerPreferences();
+            return new PlayerPreferences { PreferredLanguage = "ar" };
         }
 
         try
         {
             string json = File.ReadAllText(_prefsPath);
-            return JsonSerializer.Deserialize<PlayerPreferences>(json) ?? new PlayerPreferences();
+            PlayerPreferences loaded = JsonSerializer.Deserialize<PlayerPreferences>(json) ?? new PlayerPreferences();
+            loaded.PreferredLanguage = string.Equals(loaded.PreferredLanguage, "en", StringComparison.OrdinalIgnoreCase) ? "en" : "ar";
+            return loaded;
         }
         catch (Exception)
         {
-            return new PlayerPreferences();
+            return new PlayerPreferences { PreferredLanguage = "ar" };
         }
     }
 
